@@ -58,9 +58,11 @@ def test_add_player_no_leetify(client, monkeypatch):
 def test_add_player_with_leetify(client, monkeypatch):
     """When Leetify returns profile data, username and avatar are stored."""
     fake_profile = {
-        "steamId64": "76561198000000001",
-        "name": "FragMaster",
-        "steamAvatarUrl": "https://example.com/avatar.jpg",
+        "meta": {
+            "steam64Id": "76561198000000001",
+            "name": "FragMaster",
+            "steamAvatarUrl": "https://example.com/avatar.jpg",
+        },
         "games": [],
     }
     monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
@@ -146,39 +148,44 @@ def test_stats_after_sync(client, monkeypatch, app):
     from datetime import datetime
 
     fake_profile = {
-        "steamId64": "76561198000000001",
-        "name": "FragMaster",
-        "steamAvatarUrl": "",
+        "meta": {
+            "steam64Id": "76561198000000001",
+            "name": "FragMaster",
+            "steamAvatarUrl": "",
+        },
         "games": [
             {
                 "gameId": "match-abc-123",
                 "mapName": "de_dust2",
                 "gameFinishedAt": "2024-03-04T20:00:00Z",
                 "scores": [16, 10],
-                "playerStats": [
-                    {
-                        "steamId64": "76561198000000001",
-                        "kills": 25,
-                        "deaths": 14,
-                        "assists": 3,
-                        "hs": 10,
-                        "adr": 88.5,
-                        "hltvRatingOverall": 1.32,
-                        "leetifyRatingOverall": 0.65,
-                        "hltvRatingCt": 1.40,
-                        "hltvRatingT": 1.20,
-                        "openingKills": 4,
-                        "openingDeaths": 2,
-                        "utilityDamageDealt": 45.0,
-                        "opening": {},
-                        "utility": {},
-                    }
-                ],
             }
         ],
     }
 
+    fake_game_details = {
+        "playerStats": [
+            {
+                "steam64Id": "76561198000000001",
+                "totalKills": 25,
+                "totalDeaths": 14,
+                "totalAssists": 3,
+                "shotsHitFoeHead": 10,
+                "totalDamage": 2310.0,
+                "personalPerformanceRating": 1.32,
+                "leetifyRating": 0.65,
+                "ctLeetifyRating": 1.40,
+                "tLeetifyRating": 1.20,
+                "openingKills": 4,
+                "openingDeaths": 2,
+                "utilityDamage": 45.0,
+            }
+        ],
+        "teams": [{"score": 16}, {"score": 10}],
+    }
+
     monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    monkeypatch.setattr("leetify.get_game_details", lambda *a, **kw: fake_game_details)
     client.post("/api/players", json={"steam_id": "76561198000000001"})
     sync_res = client.post("/api/sync", json={})
     assert sync_res.status_code == 200
@@ -230,7 +237,13 @@ def test_analysis_no_openai_key(client, monkeypatch):
 
 def test_parse_player_info():
     from leetify import parse_player_info
-    profile = {"steamId64": "123", "name": "TestUser", "steamAvatarUrl": "http://img.png"}
+    profile = {
+        "meta": {
+            "steam64Id": "123",
+            "name": "TestUser",
+            "steamAvatarUrl": "http://img.png",
+        }
+    }
     info = parse_player_info(profile)
     assert info["steam_id"] == "123"
     assert info["username"] == "TestUser"
@@ -251,7 +264,6 @@ def test_parse_games_normalises_scores():
             "mapName": "de_nuke",
             "gameFinishedAt": "2024-01-01T18:00:00Z",
             "scores": [13, 16],
-            "playerStats": [],
         }]
     }
     games = parse_games(profile)
@@ -263,9 +275,44 @@ def test_parse_games_normalises_scores():
 
 def test_parse_games_missing_date():
     from leetify import parse_games
-    profile = {"games": [{"gameId": "g2", "mapName": "de_inferno", "scores": [], "playerStats": []}]}
+    profile = {"games": [{"gameId": "g2", "mapName": "de_inferno", "scores": []}]}
     games = parse_games(profile)
     assert games[0]["played_at"] is None
+
+
+def test_parse_game_player_stats():
+    from leetify import parse_game_player_stats
+    game_details = {
+        "playerStats": [
+            {
+                "steam64Id": "76561198000000001",
+                "totalKills": 20,
+                "totalDeaths": 10,
+                "totalAssists": 3,
+                "shotsHitFoeHead": 8,
+                "totalDamage": 2400.0,
+                "personalPerformanceRating": 1.25,
+                "leetifyRating": 0.60,
+                "ctLeetifyRating": 1.30,
+                "tLeetifyRating": 1.10,
+                "openingKills": 2,
+                "openingDeaths": 1,
+                "utilityDamage": 25.0,
+            }
+        ],
+        "teams": [{"score": 16}, {"score": 8}],
+    }
+    stats = parse_game_player_stats(game_details)
+    assert len(stats) == 1
+    s = stats[0]
+    assert s["steam_id"] == "76561198000000001"
+    assert s["kills"] == 20
+    assert s["deaths"] == 10
+    assert s["assists"] == 3
+    assert s["headshots"] == 8
+    assert s["adr"] == round(2400.0 / 24, 1)  # 24 total rounds = 16 + 8 team scores
+    assert s["rating"] == 1.25
+    assert s["leetify_rating"] == 0.60
 
 
 def test_openai_client_no_key():
@@ -292,39 +339,44 @@ def test_monthly_stats_with_recent_game(client, monkeypatch, app):
     from datetime import datetime, timedelta, timezone
 
     fake_profile = {
-        "steamId64": "76561198000000001",
-        "name": "MonthlyPlayer",
-        "steamAvatarUrl": "",
+        "meta": {
+            "steam64Id": "76561198000000001",
+            "name": "MonthlyPlayer",
+            "steamAvatarUrl": "",
+        },
         "games": [
             {
                 "gameId": "match-monthly-1",
                 "mapName": "de_mirage",
                 "gameFinishedAt": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat().replace("+00:00", "Z"),
                 "scores": [16, 8],
-                "playerStats": [
-                    {
-                        "steamId64": "76561198000000001",
-                        "kills": 20,
-                        "deaths": 10,
-                        "assists": 2,
-                        "hs": 8,
-                        "adr": 90.0,
-                        "hltvRatingOverall": 1.25,
-                        "leetifyRatingOverall": 0.60,
-                        "hltvRatingCt": 1.30,
-                        "hltvRatingT": 1.15,
-                        "openingKills": 3,
-                        "openingDeaths": 1,
-                        "utilityDamageDealt": 30.0,
-                        "opening": {},
-                        "utility": {},
-                    }
-                ],
             }
         ],
     }
 
+    fake_game_details = {
+        "playerStats": [
+            {
+                "steam64Id": "76561198000000001",
+                "totalKills": 20,
+                "totalDeaths": 10,
+                "totalAssists": 2,
+                "shotsHitFoeHead": 8,
+                "totalDamage": 2160.0,
+                "personalPerformanceRating": 1.25,
+                "leetifyRating": 0.60,
+                "ctLeetifyRating": 1.30,
+                "tLeetifyRating": 1.15,
+                "openingKills": 3,
+                "openingDeaths": 1,
+                "utilityDamage": 30.0,
+            }
+        ],
+        "teams": [{"score": 16}, {"score": 8}],
+    }
+
     monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    monkeypatch.setattr("leetify.get_game_details", lambda *a, **kw: fake_game_details)
     client.post("/api/players", json={"steam_id": "76561198000000001"})
     client.post("/api/sync", json={})
 
@@ -342,39 +394,44 @@ def test_monthly_stats_excludes_old_games(client, monkeypatch, app):
     from datetime import datetime, timedelta, timezone
 
     fake_profile = {
-        "steamId64": "76561198000000002",
-        "name": "OldPlayer",
-        "steamAvatarUrl": "",
+        "meta": {
+            "steam64Id": "76561198000000002",
+            "name": "OldPlayer",
+            "steamAvatarUrl": "",
+        },
         "games": [
             {
                 "gameId": "match-old-1",
                 "mapName": "de_dust2",
                 "gameFinishedAt": (datetime.now(timezone.utc) - timedelta(days=60)).isoformat().replace("+00:00", "Z"),
                 "scores": [16, 14],
-                "playerStats": [
-                    {
-                        "steamId64": "76561198000000002",
-                        "kills": 15,
-                        "deaths": 15,
-                        "assists": 1,
-                        "hs": 5,
-                        "adr": 70.0,
-                        "hltvRatingOverall": 1.0,
-                        "leetifyRatingOverall": 0.5,
-                        "hltvRatingCt": 1.0,
-                        "hltvRatingT": 1.0,
-                        "openingKills": 2,
-                        "openingDeaths": 2,
-                        "utilityDamageDealt": 20.0,
-                        "opening": {},
-                        "utility": {},
-                    }
-                ],
             }
         ],
     }
 
+    fake_game_details = {
+        "playerStats": [
+            {
+                "steam64Id": "76561198000000002",
+                "totalKills": 15,
+                "totalDeaths": 15,
+                "totalAssists": 1,
+                "shotsHitFoeHead": 5,
+                "totalDamage": 2100.0,
+                "personalPerformanceRating": 1.0,
+                "leetifyRating": 0.5,
+                "ctLeetifyRating": 1.0,
+                "tLeetifyRating": 1.0,
+                "openingKills": 2,
+                "openingDeaths": 2,
+                "utilityDamage": 20.0,
+            }
+        ],
+        "teams": [{"score": 16}, {"score": 14}],
+    }
+
     monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    monkeypatch.setattr("leetify.get_game_details", lambda *a, **kw: fake_game_details)
     client.post("/api/players", json={"steam_id": "76561198000000002"})
     client.post("/api/sync", json={})
 
@@ -453,9 +510,11 @@ def test_steam_friends_marks_tracked(client, monkeypatch):
 def test_sync_auto_creates_session(client, monkeypatch):
     """Syncing without a session_id should auto-create a session for today."""
     fake_profile = {
-        "steamId64": "76561198000000001",
-        "name": "AutoSession",
-        "steamAvatarUrl": "",
+        "meta": {
+            "steam64Id": "76561198000000001",
+            "name": "AutoSession",
+            "steamAvatarUrl": "",
+        },
         "games": [],
     }
     monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
@@ -472,9 +531,11 @@ def test_sync_auto_creates_session(client, monkeypatch):
 def test_sync_reuses_todays_session(client, monkeypatch):
     """Syncing twice on the same day should not create duplicate sessions."""
     fake_profile = {
-        "steamId64": "76561198000000001",
-        "name": "AutoSession",
-        "steamAvatarUrl": "",
+        "meta": {
+            "steam64Id": "76561198000000001",
+            "name": "AutoSession",
+            "steamAvatarUrl": "",
+        },
         "games": [],
     }
     monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
