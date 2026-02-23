@@ -1,0 +1,407 @@
+"""CS Monday Tracker – Flask application entry point."""
+from flask import Flask, jsonify, request, render_template, abort
+from flask_cors import CORS
+from sqlalchemy import func
+
+from config import Config
+from extensions import db
+import leetify as leetify_client
+import openai_client
+
+
+def create_app(config_class=Config):
+    app = Flask(__name__)
+    app.config.from_object(config_class)
+    CORS(app)
+    db.init_app(app)
+
+    with app.app_context():
+        # Import models so SQLAlchemy registers them before create_all
+        from models import Player, Game, PlayerGame, Session, AIAnalysis  # noqa: F401
+        db.create_all()
+
+    # ------------------------------------------------------------------ #
+    # Frontend routes                                                       #
+    # ------------------------------------------------------------------ #
+
+    @app.route("/")
+    def index():
+        return render_template("dashboard.html")
+
+    # ------------------------------------------------------------------ #
+    # Player management                                                     #
+    # ------------------------------------------------------------------ #
+
+    @app.route("/api/players", methods=["GET"])
+    def list_players():
+        from models import Player
+        players = Player.query.order_by(Player.username).all()
+        return jsonify([p.to_dict() for p in players])
+
+    @app.route("/api/players", methods=["POST"])
+    def add_player():
+        from models import Player
+        data = request.get_json(force=True) or {}
+        steam_id = (data.get("steam_id") or "").strip()
+        if not steam_id:
+            return jsonify({"error": "steam_id is required"}), 400
+
+        existing = Player.query.filter_by(steam_id=steam_id).first()
+        if existing:
+            return jsonify({"error": "Player already tracked", "player": existing.to_dict()}), 409
+
+        # Fetch identity from Leetify
+        profile = leetify_client.get_player_profile(steam_id, api_key=app.config["LEETIFY_API_KEY"])
+        if not profile:
+            # Create player with just the steam_id; sync can fill in the rest later
+            player = Player(steam_id=steam_id, username=steam_id)
+        else:
+            info = leetify_client.parse_player_info(profile)
+            player = Player(
+                steam_id=steam_id,
+                username=info["username"],
+                avatar_url=info["avatar_url"],
+            )
+
+        db.session.add(player)
+        db.session.commit()
+        return jsonify(player.to_dict()), 201
+
+    @app.route("/api/players/<steam_id>", methods=["GET"])
+    def get_player(steam_id):
+        from models import Player
+        player = Player.query.filter_by(steam_id=steam_id).first_or_404()
+        return jsonify(player.to_dict())
+
+    @app.route("/api/players/<steam_id>", methods=["DELETE"])
+    def remove_player(steam_id):
+        from models import Player
+        player = Player.query.filter_by(steam_id=steam_id).first_or_404()
+        db.session.delete(player)
+        db.session.commit()
+        return jsonify({"message": "Player removed"})
+
+    # ------------------------------------------------------------------ #
+    # Session management                                                    #
+    # ------------------------------------------------------------------ #
+
+    @app.route("/api/sessions", methods=["GET"])
+    def list_sessions():
+        from models import Session
+        sessions = Session.query.order_by(Session.date.desc()).all()
+        return jsonify([s.to_dict() for s in sessions])
+
+    @app.route("/api/sessions", methods=["POST"])
+    def create_session():
+        from models import Session, Player
+        data = request.get_json(force=True) or {}
+        name = data.get("name") or "Monday Session"
+        notes = data.get("notes") or ""
+        steam_ids = data.get("steam_ids") or []
+
+        session = Session(name=name, notes=notes)
+        for sid in steam_ids:
+            player = Player.query.filter_by(steam_id=sid).first()
+            if player:
+                session.players.append(player)
+
+        db.session.add(session)
+        db.session.commit()
+        return jsonify(session.to_dict()), 201
+
+    @app.route("/api/sessions/current", methods=["GET"])
+    def current_session():
+        from models import Session, PlayerGame, Player
+        session = Session.query.order_by(Session.date.desc()).first()
+        if not session:
+            return jsonify({"session": None, "players": []})
+
+        stats = _aggregate_session_stats(session)
+        return jsonify({"session": session.to_dict(), "players": stats})
+
+    @app.route("/api/sessions/<int:session_id>", methods=["GET"])
+    def get_session(session_id):
+        from models import Session
+        session = Session.query.get_or_404(session_id)
+        stats = _aggregate_session_stats(session)
+        return jsonify({"session": session.to_dict(), "players": stats})
+
+    # ------------------------------------------------------------------ #
+    # Sync – pull fresh data from Leetify for all tracked players          #
+    # ------------------------------------------------------------------ #
+
+    @app.route("/api/sync", methods=["POST"])
+    def sync_players():
+        """Fetch latest games from Leetify for all tracked players and upsert into DB."""
+        from models import Player, Game, PlayerGame
+        data = request.get_json(force=True) or {}
+        session_id = data.get("session_id")  # optional: attach games to a session
+
+        players = Player.query.all()
+        if not players:
+            return jsonify({"message": "No players tracked yet. Add players first."}), 200
+
+        synced_games = 0
+        errors = []
+
+        for player in players:
+            profile = leetify_client.get_player_profile(player.steam_id, api_key=app.config["LEETIFY_API_KEY"])
+            if not profile:
+                errors.append(f"Could not fetch data for {player.username} ({player.steam_id})")
+                continue
+
+            # Update player identity
+            info = leetify_client.parse_player_info(profile)
+            player.username = info["username"] or player.username
+            player.avatar_url = info["avatar_url"] or player.avatar_url
+
+            parsed_games = leetify_client.parse_games(profile)
+            for g_data in parsed_games:
+                match_id = g_data["match_id"]
+                if not match_id:
+                    continue
+
+                # Upsert game record
+                game = Game.query.filter_by(match_id=match_id).first()
+                if not game:
+                    game = Game(
+                        match_id=match_id,
+                        played_at=g_data["played_at"],
+                        map_name=g_data["map_name"],
+                        score_ct=g_data["score_ct"],
+                        score_t=g_data["score_t"],
+                        session_id=session_id,
+                    )
+                    db.session.add(game)
+                    db.session.flush()  # get game.id
+                    synced_games += 1
+
+                # Find this player's stats in the game
+                player_stats = next(
+                    (s for s in g_data["player_stats"] if s.get("steam_id") == player.steam_id),
+                    None,
+                )
+                if not player_stats:
+                    continue
+
+                pg = PlayerGame.query.filter_by(player_id=player.id, game_id=game.id).first()
+                if not pg:
+                    pg = PlayerGame(player_id=player.id, game_id=game.id)
+                    db.session.add(pg)
+
+                pg.kills = player_stats["kills"]
+                pg.deaths = player_stats["deaths"]
+                pg.assists = player_stats["assists"]
+                pg.headshots = player_stats["headshots"]
+                pg.adr = player_stats["adr"]
+                pg.rating = player_stats["rating"]
+                pg.leetify_rating = player_stats["leetify_rating"]
+                pg.ct_rating = player_stats["ct_rating"]
+                pg.t_rating = player_stats["t_rating"]
+                pg.opening_kills = player_stats["opening_kills"]
+                pg.opening_deaths = player_stats["opening_deaths"]
+                pg.utility_damage = player_stats["utility_damage"]
+
+        db.session.commit()
+        return jsonify({"synced_games": synced_games, "errors": errors})
+
+    # ------------------------------------------------------------------ #
+    # Stats API                                                             #
+    # ------------------------------------------------------------------ #
+
+    @app.route("/api/stats", methods=["GET"])
+    def all_time_stats():
+        """Aggregate stats for all players across all games."""
+        from models import Player
+        players = Player.query.all()
+        stats = [_aggregate_player_stats(p) for p in players]
+        # Sort by avg_rating descending so best player is first
+        stats.sort(key=lambda x: x["avg_rating"], reverse=True)
+        return jsonify(stats)
+
+    @app.route("/api/stats/<steam_id>", methods=["GET"])
+    def player_stats(steam_id):
+        """Detailed stats for a single player including per-game breakdown."""
+        from models import Player, PlayerGame
+        player = Player.query.filter_by(steam_id=steam_id).first_or_404()
+        agg = _aggregate_player_stats(player)
+        games = []
+        for pg in player.games:
+            entry = pg.to_dict()
+            entry["game"] = pg.game.to_dict()
+            games.append(entry)
+        games.sort(key=lambda x: x["game"]["played_at"] or "", reverse=True)
+        return jsonify({"player": player.to_dict(), "stats": agg, "games": games})
+
+    @app.route("/api/stats/problem-players", methods=["GET"])
+    def problem_players():
+        """Return players ranked by a 'problem score' (low rating, low KD, etc.)."""
+        from models import Player
+        players = Player.query.all()
+        stats = []
+        for p in players:
+            agg = _aggregate_player_stats(p)
+            if agg["games"] == 0:
+                continue
+            # Problem score: lower is better. Penalise low rating and low K/D
+            problem_score = round(
+                (1 / max(agg["avg_rating"], 0.01)) + (1 / max(agg["avg_kd"], 0.01)),
+                3,
+            )
+            agg["problem_score"] = problem_score
+            stats.append(agg)
+
+        stats.sort(key=lambda x: x["problem_score"], reverse=True)
+        return jsonify(stats)
+
+    # ------------------------------------------------------------------ #
+    # AI Analysis                                                           #
+    # ------------------------------------------------------------------ #
+
+    @app.route("/api/analysis", methods=["GET"])
+    def list_analyses():
+        from models import AIAnalysis
+        analyses = AIAnalysis.query.order_by(AIAnalysis.created_at.desc()).limit(20).all()
+        return jsonify([a.to_dict() for a in analyses])
+
+    @app.route("/api/analysis", methods=["POST"])
+    def generate_analysis():
+        from models import Player, Session, AIAnalysis
+        data = request.get_json(force=True) or {}
+        scope = data.get("scope", "all_time")   # "all_time" | "session"
+        scope_id = data.get("scope_id")         # session id if scope=="session"
+
+        if scope == "session" and scope_id:
+            session = Session.query.get(scope_id)
+            if not session:
+                return jsonify({"error": "Session not found"}), 404
+            player_stats_list = _aggregate_session_stats(session)
+            scope_label = f"session '{session.name}'"
+        else:
+            players = Player.query.all()
+            player_stats_list = [_aggregate_player_stats(p) for p in players]
+            scope_label = "all time"
+
+        if not player_stats_list:
+            return jsonify({"error": "No stats available. Sync data first."}), 400
+
+        analysis_text = openai_client.generate_analysis(
+            player_stats_list,
+            scope=scope_label,
+            openai_api_key=app.config["OPENAI_API_KEY"],
+        )
+
+        record = AIAnalysis(
+            scope=scope,
+            scope_id=str(scope_id) if scope_id else "all",
+            prompt_summary=f"Analysed {len(player_stats_list)} players ({scope_label})",
+            analysis=analysis_text,
+            model_used="gpt-4o-mini",
+        )
+        db.session.add(record)
+        db.session.commit()
+
+        return jsonify(record.to_dict()), 201
+
+    # ------------------------------------------------------------------ #
+    # Helper functions                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _aggregate_player_stats(player) -> dict:
+        """Return a dict of aggregate stats for a player across all their games."""
+        from models import PlayerGame
+        pgs = PlayerGame.query.filter_by(player_id=player.id).all()
+        if not pgs:
+            return {
+                "steam_id": player.steam_id,
+                "username": player.username,
+                "avatar_url": player.avatar_url,
+                "games": 0,
+                "avg_rating": 0.0,
+                "avg_kd": 0.0,
+                "avg_adr": 0.0,
+                "avg_hs_pct": 0.0,
+                "avg_leetify_rating": 0.0,
+                "win_rate": 0.0,
+                "total_kills": 0,
+                "total_deaths": 0,
+                "total_assists": 0,
+            }
+
+        n = len(pgs)
+        total_kills = sum(pg.kills for pg in pgs)
+        total_deaths = sum(pg.deaths for pg in pgs)
+        total_assists = sum(pg.assists for pg in pgs)
+
+        return {
+            "steam_id": player.steam_id,
+            "username": player.username,
+            "avatar_url": player.avatar_url,
+            "games": n,
+            "avg_rating": round(sum(pg.rating for pg in pgs) / n, 3),
+            "avg_leetify_rating": round(sum(pg.leetify_rating for pg in pgs) / n, 3),
+            "avg_kd": round(total_kills / max(total_deaths, 1), 2),
+            "avg_adr": round(sum(pg.adr for pg in pgs) / n, 1),
+            "avg_hs_pct": round(
+                sum(pg.headshot_pct for pg in pgs) / n, 1
+            ),
+            "win_rate": 0.0,  # win/loss requires knowing which team the player was on
+            "total_kills": total_kills,
+            "total_deaths": total_deaths,
+            "total_assists": total_assists,
+        }
+
+    def _aggregate_session_stats(session) -> list[dict]:
+        """Return aggregate stats for all players in a session."""
+        from models import PlayerGame
+        result = []
+        for player in session.players:
+            # Filter player games to only those in this session
+            pgs = (
+                PlayerGame.query
+                .join(PlayerGame.game)
+                .filter(
+                    PlayerGame.player_id == player.id,
+                    # If game.session_id is set use it, otherwise fall back to all
+                )
+                .all()
+            )
+            # Prefer games explicitly linked to this session
+            session_pgs = [pg for pg in pgs if pg.game.session_id == session.id]
+            if session_pgs:
+                pgs = session_pgs
+
+            if not pgs:
+                continue
+
+            n = len(pgs)
+            total_kills = sum(pg.kills for pg in pgs)
+            total_deaths = sum(pg.deaths for pg in pgs)
+
+            result.append({
+                "steam_id": player.steam_id,
+                "username": player.username,
+                "avatar_url": player.avatar_url,
+                "games": n,
+                "avg_rating": round(sum(pg.rating for pg in pgs) / n, 3),
+                "avg_leetify_rating": round(sum(pg.leetify_rating for pg in pgs) / n, 3),
+                "avg_kd": round(total_kills / max(total_deaths, 1), 2),
+                "avg_adr": round(sum(pg.adr for pg in pgs) / n, 1),
+                "avg_hs_pct": round(sum(pg.headshot_pct for pg in pgs) / n, 1),
+                "win_rate": 0.0,
+                "total_kills": total_kills,
+                "total_deaths": total_deaths,
+                "total_assists": sum(pg.assists for pg in pgs),
+            })
+
+        result.sort(key=lambda x: x["avg_rating"], reverse=True)
+        return result
+
+    return app
+
+
+if __name__ == "__main__":
+    import os
+    app = create_app()
+    debug = os.getenv("FLASK_ENV") == "development"
+    app.run(debug=debug, port=5000)
