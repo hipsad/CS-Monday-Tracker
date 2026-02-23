@@ -363,29 +363,40 @@ def create_app(config_class=Config):
     @app.route("/api/stats/records", methods=["GET"])
     def stat_records():
         """Return all-time single-game record holders for key stats."""
-        from models import Player, PlayerGame, Game
+        from models import PlayerGame, Game
+        from sqlalchemy import desc
         records = {}
-        categories = [
-            ("best_rating",      "rating",      "HLTV Rating"),
-            ("best_adr",         "adr",         "ADR"),
-            ("best_hs_pct",      "headshot_pct","HS%"),
-            ("most_kills",       "kills",       "Kills"),
-            ("best_kd",          "kd_ratio",    "K/D Ratio"),
-            ("most_assists",     "assists",     "Assists"),
-            ("best_leetify",     "leetify_rating", "Leetify Rating"),
-            ("most_utility_dmg", "utility_damage", "Utility Damage"),
+        # (result_key, ORM column/property, display label, is_property)
+        # For @property fields (kd_ratio, headshot_pct) we must do a Python sort;
+        # for plain columns we let the DB do the ordering.
+        column_categories = [
+            ("best_rating",      PlayerGame.rating,          "HLTV Rating"),
+            ("best_adr",         PlayerGame.adr,             "ADR"),
+            ("most_kills",       PlayerGame.kills,           "Kills"),
+            ("most_assists",     PlayerGame.assists,         "Assists"),
+            ("best_leetify",     PlayerGame.leetify_rating,  "Leetify Rating"),
+            ("most_utility_dmg", PlayerGame.utility_damage,  "Utility Damage"),
         ]
-        for key, attr, label in categories:
-            pgs = PlayerGame.query.join(PlayerGame.game).all()
-            if not pgs:
+        property_categories = [
+            ("best_hs_pct",  "headshot_pct",  "HS%"),
+            ("best_kd",      "kd_ratio",      "K/D Ratio"),
+        ]
+
+        for key, col, label in column_categories:
+            best_pg = (
+                PlayerGame.query
+                .join(PlayerGame.game)
+                .order_by(desc(col))
+                .first()
+            )
+            if not best_pg:
                 continue
-            best_pg = max(pgs, key=lambda pg: getattr(pg, attr) or 0)
-            val = getattr(best_pg, attr) or 0
+            val = float(getattr(best_pg, col.key) or 0)
             if val == 0:
                 continue
             records[key] = {
                 "label": label,
-                "value": round(float(val), 2),
+                "value": round(val, 2),
                 "username": best_pg.player.username,
                 "avatar_url": best_pg.player.avatar_url,
                 "steam_id": best_pg.player.steam_id,
@@ -393,6 +404,26 @@ def create_app(config_class=Config):
                 "played_at": best_pg.game.played_at.isoformat() if best_pg.game.played_at else None,
                 "match_id": best_pg.game.match_id,
             }
+
+        # Property-based categories require loading all records
+        all_pgs = PlayerGame.query.join(PlayerGame.game).all()
+        if all_pgs:
+            for key, attr, label in property_categories:
+                best_pg = max(all_pgs, key=lambda pg, a=attr: getattr(pg, a) or 0)
+                val = getattr(best_pg, attr) or 0
+                if val == 0:
+                    continue
+                records[key] = {
+                    "label": label,
+                    "value": round(float(val), 2),
+                    "username": best_pg.player.username,
+                    "avatar_url": best_pg.player.avatar_url,
+                    "steam_id": best_pg.player.steam_id,
+                    "map_name": best_pg.game.map_name,
+                    "played_at": best_pg.game.played_at.isoformat() if best_pg.game.played_at else None,
+                    "match_id": best_pg.game.match_id,
+                }
+
         return jsonify(records)
 
     @app.route("/api/stats/problem-players", methods=["GET"])

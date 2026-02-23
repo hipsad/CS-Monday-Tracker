@@ -193,23 +193,21 @@ def _parse_player_game_stats(raw: dict, total_rounds: int = 0) -> dict:
     Supports both the new public API (snake_case) and the legacy API
     (camelCase) so that existing tests and any cached data continue to work.
     """
-    # ---- Core counts: prefer snake_case (new API), fall back to camelCase ----
-    kills   = raw.get("total_kills")   if raw.get("total_kills")   is not None else (raw.get("totalKills",   0) or 0)
-    deaths  = raw.get("total_deaths")  if raw.get("total_deaths")  is not None else (raw.get("totalDeaths",  0) or 0)
-    assists = raw.get("total_assists") if raw.get("total_assists") is not None else (raw.get("totalAssists", 0) or 0)
-    kills   = kills   or 0
-    deaths  = deaths  or 0
-    assists = assists or 0
+
+    def _field(new_key: str, legacy_key: str, default: int | float = 0) -> int | float:
+        """Return the value for a stat field, preferring the new API key."""
+        v = raw.get(new_key)
+        return v if v is not None else (raw.get(legacy_key) or default)
+
+    # ---- Core counts ----
+    kills     = int(_field("total_kills",   "totalKills",   0))
+    deaths    = int(_field("total_deaths",  "totalDeaths",  0))
+    assists   = int(_field("total_assists", "totalAssists", 0))
 
     # ---- Headshot kills ----
     # New API: total_hs_kills (headshot kills count, the right metric for HS%)
     # Legacy API: shotsHitFoeHead (shots that hit enemy head – used as proxy)
-    headshots = (
-        raw.get("total_hs_kills")
-        if raw.get("total_hs_kills") is not None
-        else (raw.get("shotsHitFoeHead", 0) or 0)
-    )
-    headshots = headshots or 0
+    headshots = int(_field("total_hs_kills", "shotsHitFoeHead", 0))
 
     # ---- ADR ----
     # New API provides dpr (damage per round) pre-computed – use it directly.
@@ -218,10 +216,7 @@ def _parse_player_game_stats(raw: dict, total_rounds: int = 0) -> dict:
     if dpr_val is not None:
         adr = round(float(dpr_val), 1)
     else:
-        total_damage = float(
-            raw.get("total_damage") if raw.get("total_damage") is not None
-            else (raw.get("totalDamage", 0) or 0)
-        )
+        total_damage = float(_field("total_damage", "totalDamage", 0))
         # Per-player fallback when game-level round count is unavailable
         if not total_rounds:
             total_rounds = (
@@ -238,24 +233,13 @@ def _parse_player_game_stats(raw: dict, total_rounds: int = 0) -> dict:
     # ---- Ratings ----
     # New API: leetify_rating per match (snake_case)
     # Legacy API: leetifyRating, personalPerformanceRating (camelCase)
-    leetify_rating = float(
-        raw.get("leetify_rating") if raw.get("leetify_rating") is not None
-        else (raw.get("leetifyRating", 0) or 0)
-    )
+    leetify_rating = float(_field("leetify_rating", "leetifyRating", 0))
     # personalPerformanceRating was the HLTV-style metric in the old API.
     # The new public API does not expose a separate HLTV 2.0 value, so we
     # fall back to leetify_rating as the best available performance proxy.
-    rating = float(
-        raw.get("personalPerformanceRating") or leetify_rating or 0
-    )
-    ct_rating = float(
-        raw.get("ct_leetify_rating") if raw.get("ct_leetify_rating") is not None
-        else (raw.get("ctLeetifyRating", 0) or 0)
-    )
-    t_rating = float(
-        raw.get("t_leetify_rating") if raw.get("t_leetify_rating") is not None
-        else (raw.get("tLeetifyRating", 0) or 0)
-    )
+    rating     = float(raw.get("personalPerformanceRating") or leetify_rating or 0)
+    ct_rating  = float(_field("ct_leetify_rating", "ctLeetifyRating", 0))
+    t_rating   = float(_field("t_leetify_rating",  "tLeetifyRating",  0))
 
     # ---- Fields absent from the new public API ----
     opening_kills  = raw.get("openingKills",  0) or 0
