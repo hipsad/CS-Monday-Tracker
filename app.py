@@ -182,6 +182,13 @@ def create_app(config_class=Config):
                 if not match_id:
                     continue
 
+                # Fetch per-player stats from the game details endpoint
+                game_details = leetify_client.get_game_details(match_id, api_key=app.config["LEETIFY_API_KEY"])
+                if not game_details:
+                    continue
+
+                all_player_stats = leetify_client.parse_game_player_stats(game_details)
+
                 # Upsert game record
                 game = Game.query.filter_by(match_id=match_id).first()
                 if not game:
@@ -199,7 +206,7 @@ def create_app(config_class=Config):
 
                 # Find this player's stats in the game
                 player_stats = next(
-                    (s for s in g_data["player_stats"] if s.get("steam_id") == player.steam_id),
+                    (s for s in all_player_stats if s.get("steam_id") == player.steam_id),
                     None,
                 )
                 if not player_stats:
