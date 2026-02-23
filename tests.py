@@ -275,3 +275,233 @@ def test_openai_client_no_key():
                                   "win_rate": 50.0}],
                                 scope="all time", openai_api_key="")
     assert "OpenAI API key is not configured" in result
+
+
+# ------------------------------------------------------------------ #
+# Monthly stats endpoint                                               #
+# ------------------------------------------------------------------ #
+
+def test_monthly_stats_empty(client):
+    res = client.get("/api/stats/monthly")
+    assert res.status_code == 200
+    assert res.get_json() == []
+
+
+def test_monthly_stats_with_recent_game(client, monkeypatch, app):
+    """Games played within the last 30 days should appear in monthly stats."""
+    from datetime import datetime, timedelta, timezone
+
+    fake_profile = {
+        "steamId64": "76561198000000001",
+        "name": "MonthlyPlayer",
+        "steamAvatarUrl": "",
+        "games": [
+            {
+                "gameId": "match-monthly-1",
+                "mapName": "de_mirage",
+                "gameFinishedAt": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat().replace("+00:00", "Z"),
+                "scores": [16, 8],
+                "playerStats": [
+                    {
+                        "steamId64": "76561198000000001",
+                        "kills": 20,
+                        "deaths": 10,
+                        "assists": 2,
+                        "hs": 8,
+                        "adr": 90.0,
+                        "hltvRatingOverall": 1.25,
+                        "leetifyRatingOverall": 0.60,
+                        "hltvRatingCt": 1.30,
+                        "hltvRatingT": 1.15,
+                        "openingKills": 3,
+                        "openingDeaths": 1,
+                        "utilityDamageDealt": 30.0,
+                        "opening": {},
+                        "utility": {},
+                    }
+                ],
+            }
+        ],
+    }
+
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    client.post("/api/players", json={"steam_id": "76561198000000001"})
+    client.post("/api/sync", json={})
+
+    res = client.get("/api/stats/monthly")
+    assert res.status_code == 200
+    players = res.get_json()
+    assert len(players) == 1
+    assert players[0]["username"] == "MonthlyPlayer"
+    assert players[0]["games"] == 1
+    assert players[0]["total_kills"] == 20
+
+
+def test_monthly_stats_excludes_old_games(client, monkeypatch, app):
+    """Games older than 30 days should NOT appear in monthly stats."""
+    from datetime import datetime, timedelta, timezone
+
+    fake_profile = {
+        "steamId64": "76561198000000002",
+        "name": "OldPlayer",
+        "steamAvatarUrl": "",
+        "games": [
+            {
+                "gameId": "match-old-1",
+                "mapName": "de_dust2",
+                "gameFinishedAt": (datetime.now(timezone.utc) - timedelta(days=60)).isoformat().replace("+00:00", "Z"),
+                "scores": [16, 14],
+                "playerStats": [
+                    {
+                        "steamId64": "76561198000000002",
+                        "kills": 15,
+                        "deaths": 15,
+                        "assists": 1,
+                        "hs": 5,
+                        "adr": 70.0,
+                        "hltvRatingOverall": 1.0,
+                        "leetifyRatingOverall": 0.5,
+                        "hltvRatingCt": 1.0,
+                        "hltvRatingT": 1.0,
+                        "openingKills": 2,
+                        "openingDeaths": 2,
+                        "utilityDamageDealt": 20.0,
+                        "opening": {},
+                        "utility": {},
+                    }
+                ],
+            }
+        ],
+    }
+
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    client.post("/api/players", json={"steam_id": "76561198000000002"})
+    client.post("/api/sync", json={})
+
+    res = client.get("/api/stats/monthly")
+    assert res.status_code == 200
+    players = res.get_json()
+    # Player exists but has 0 games in the last 30 days
+    assert len(players) == 1
+    assert players[0]["games"] == 0
+    assert players[0]["total_kills"] == 0
+
+
+# ------------------------------------------------------------------ #
+# Steam friends endpoint                                               #
+# ------------------------------------------------------------------ #
+
+def test_steam_friends_no_key(client, monkeypatch):
+    """When Steam API returns None (e.g. bad key), endpoint returns 400."""
+    monkeypatch.setattr("steam.get_friend_list", lambda *a, **kw: None)
+    res = client.get("/api/steam/friends/76561198000000001")
+    assert res.status_code == 400
+    assert "error" in res.get_json()
+
+
+def test_steam_friends_empty_list(client, monkeypatch):
+    """A player with no friends returns an empty list."""
+    monkeypatch.setattr("steam.get_friend_list", lambda *a, **kw: [])
+    monkeypatch.setattr("steam.get_player_summaries", lambda *a, **kw: [])
+    res = client.get("/api/steam/friends/76561198000000001")
+    assert res.status_code == 200
+    assert res.get_json() == []
+
+
+def test_steam_friends_returns_profiles(client, monkeypatch):
+    """Friends are returned with Steam profile data and tracked flag."""
+    monkeypatch.setattr("steam.get_friend_list",
+                        lambda *a, **kw: ["76561198000000010", "76561198000000011"])
+    monkeypatch.setattr("steam.get_player_summaries", lambda *a, **kw: [
+        {"steam_id": "76561198000000010", "username": "Alice",
+         "avatar_url": "http://img/alice.png", "profile_url": "", "real_name": ""},
+        {"steam_id": "76561198000000011", "username": "Bob",
+         "avatar_url": "http://img/bob.png", "profile_url": "", "real_name": ""},
+    ])
+    res = client.get("/api/steam/friends/76561198000000001")
+    assert res.status_code == 200
+    friends = res.get_json()
+    assert len(friends) == 2
+    usernames = {f["username"] for f in friends}
+    assert "Alice" in usernames
+    assert "Bob" in usernames
+    for f in friends:
+        assert f["tracked"] is False
+
+
+def test_steam_friends_marks_tracked(client, monkeypatch):
+    """A friend who is already tracked should have tracked=True."""
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: None)
+    client.post("/api/players", json={"steam_id": "76561198000000010"})
+
+    monkeypatch.setattr("steam.get_friend_list",
+                        lambda *a, **kw: ["76561198000000010"])
+    monkeypatch.setattr("steam.get_player_summaries", lambda *a, **kw: [
+        {"steam_id": "76561198000000010", "username": "TrackedFriend",
+         "avatar_url": "", "profile_url": "", "real_name": ""},
+    ])
+    res = client.get("/api/steam/friends/76561198000000001")
+    assert res.status_code == 200
+    friends = res.get_json()
+    assert friends[0]["tracked"] is True
+
+
+# ------------------------------------------------------------------ #
+# Auto-session creation on sync                                        #
+# ------------------------------------------------------------------ #
+
+def test_sync_auto_creates_session(client, monkeypatch):
+    """Syncing without a session_id should auto-create a session for today."""
+    fake_profile = {
+        "steamId64": "76561198000000001",
+        "name": "AutoSession",
+        "steamAvatarUrl": "",
+        "games": [],
+    }
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    client.post("/api/players", json={"steam_id": "76561198000000001"})
+
+    res = client.post("/api/sync", json={})
+    assert res.status_code == 200
+
+    sessions = client.get("/api/sessions").get_json()
+    assert len(sessions) == 1
+    assert sessions[0]["notes"] == "Auto-created by sync"
+
+
+def test_sync_reuses_todays_session(client, monkeypatch):
+    """Syncing twice on the same day should not create duplicate sessions."""
+    fake_profile = {
+        "steamId64": "76561198000000001",
+        "name": "AutoSession",
+        "steamAvatarUrl": "",
+        "games": [],
+    }
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    client.post("/api/players", json={"steam_id": "76561198000000001"})
+
+    client.post("/api/sync", json={})
+    client.post("/api/sync", json={})
+
+    sessions = client.get("/api/sessions").get_json()
+    assert len(sessions) == 1
+
+
+# ------------------------------------------------------------------ #
+# Steam client unit tests                                              #
+# ------------------------------------------------------------------ #
+
+def test_steam_parse_summary():
+    from steam import _parse_summary
+    raw = {
+        "steamid": "76561198000000001",
+        "personaname": "TestUser",
+        "avatarmedium": "http://img/avatar.png",
+        "profileurl": "https://steamcommunity.com/id/test/",
+        "realname": "Test User",
+    }
+    result = _parse_summary(raw)
+    assert result["steam_id"] == "76561198000000001"
+    assert result["username"] == "TestUser"
+    assert result["avatar_url"] == "http://img/avatar.png"
+    assert result["profile_url"] == "https://steamcommunity.com/id/test/"
