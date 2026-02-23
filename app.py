@@ -7,6 +7,7 @@ from config import Config
 from extensions import db
 import leetify as leetify_client
 import openai_client
+import steam as steam_client
 
 
 def create_app(config_class=Config):
@@ -133,13 +134,33 @@ def create_app(config_class=Config):
     @app.route("/api/sync", methods=["POST"])
     def sync_players():
         """Fetch latest games from Leetify for all tracked players and upsert into DB."""
-        from models import Player, Game, PlayerGame
+        from datetime import datetime, date, timezone
+        from models import Player, Game, PlayerGame, Session
         data = request.get_json(force=True) or {}
         session_id = data.get("session_id")  # optional: attach games to a session
 
         players = Player.query.all()
         if not players:
             return jsonify({"message": "No players tracked yet. Add players first."}), 200
+
+        # Auto-create a session for today if no session_id provided
+        if not session_id:
+            today = date.today()
+            existing_session = Session.query.filter(
+                func.date(Session.date) == today
+            ).first()
+            if existing_session:
+                session_id = existing_session.id
+            else:
+                auto_session = Session(
+                    name=f"Session – {today.strftime('%B %d, %Y')}",
+                    notes="Auto-created by sync",
+                )
+                for player in players:
+                    auto_session.players.append(player)
+                db.session.add(auto_session)
+                db.session.flush()
+                session_id = auto_session.id
 
         synced_games = 0
         errors = []
@@ -219,6 +240,62 @@ def create_app(config_class=Config):
         stats.sort(key=lambda x: x["avg_rating"], reverse=True)
         return jsonify(stats)
 
+    @app.route("/api/stats/monthly", methods=["GET"])
+    def monthly_stats():
+        """Aggregate stats for all players over the last 30 days."""
+        from datetime import datetime, timedelta, timezone
+        from models import Player, PlayerGame, Game
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        players = Player.query.all()
+        result = []
+        for player in players:
+            pgs = (
+                PlayerGame.query
+                .join(PlayerGame.game)
+                .filter(
+                    PlayerGame.player_id == player.id,
+                    Game.played_at >= cutoff,
+                )
+                .all()
+            )
+            if not pgs:
+                result.append({
+                    "steam_id": player.steam_id,
+                    "username": player.username,
+                    "avatar_url": player.avatar_url,
+                    "games": 0,
+                    "avg_rating": 0.0,
+                    "avg_kd": 0.0,
+                    "avg_adr": 0.0,
+                    "avg_hs_pct": 0.0,
+                    "avg_leetify_rating": 0.0,
+                    "win_rate": 0.0,
+                    "total_kills": 0,
+                    "total_deaths": 0,
+                    "total_assists": 0,
+                })
+                continue
+            n = len(pgs)
+            total_kills = sum(pg.kills for pg in pgs)
+            total_deaths = sum(pg.deaths for pg in pgs)
+            result.append({
+                "steam_id": player.steam_id,
+                "username": player.username,
+                "avatar_url": player.avatar_url,
+                "games": n,
+                "avg_rating": round(sum(pg.rating for pg in pgs) / n, 3),
+                "avg_leetify_rating": round(sum(pg.leetify_rating for pg in pgs) / n, 3),
+                "avg_kd": round(total_kills / max(total_deaths, 1), 2),
+                "avg_adr": round(sum(pg.adr for pg in pgs) / n, 1),
+                "avg_hs_pct": round(sum(pg.headshot_pct for pg in pgs) / n, 1),
+                "win_rate": 0.0,
+                "total_kills": total_kills,
+                "total_deaths": total_deaths,
+                "total_assists": sum(pg.assists for pg in pgs),
+            })
+        result.sort(key=lambda x: x["avg_rating"], reverse=True)
+        return jsonify(result)
+
     @app.route("/api/stats/<steam_id>", methods=["GET"])
     def player_stats(steam_id):
         """Detailed stats for a single player including per-game breakdown."""
@@ -253,6 +330,34 @@ def create_app(config_class=Config):
 
         stats.sort(key=lambda x: x["problem_score"], reverse=True)
         return jsonify(stats)
+
+    # ------------------------------------------------------------------ #
+    # Steam API                                                             #
+    # ------------------------------------------------------------------ #
+
+    @app.route("/api/steam/friends/<steam_id>", methods=["GET"])
+    def steam_friends(steam_id):
+        """Return Steam friend profiles for the given Steam64 ID."""
+        from models import Player
+        friend_ids = steam_client.get_friend_list(steam_id, api_key=app.config["STEAM_API_KEY"])
+        if friend_ids is None:
+            return jsonify({
+                "error": (
+                    "Could not fetch friends list. "
+                    "Ensure your Steam profile is public and your STEAM_API_KEY is set."
+                )
+            }), 400
+
+        summaries = steam_client.get_player_summaries(friend_ids, api_key=app.config["STEAM_API_KEY"])
+
+        # Mark friends that are already tracked
+        tracked_ids = {p.steam_id for p in Player.query.all()}
+        for s in summaries:
+            s["tracked"] = s["steam_id"] in tracked_ids
+
+        # Sort: tracked first, then alphabetically
+        summaries.sort(key=lambda x: (not x["tracked"], x["username"].lower()))
+        return jsonify(summaries)
 
     # ------------------------------------------------------------------ #
     # AI Analysis                                                           #

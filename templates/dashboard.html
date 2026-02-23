@@ -13,7 +13,8 @@
       <p class="subtitle">Muck Boys Performance Dashboard</p>
     </div>
     <nav>
-      <button class="nav-btn active" data-tab="session">Current Session</button>
+      <button class="nav-btn active" data-tab="home">Home</button>
+      <button class="nav-btn" data-tab="session">Current Session</button>
       <button class="nav-btn" data-tab="alltime">All-Time Stats</button>
       <button class="nav-btn" data-tab="players">Players</button>
       <button class="nav-btn" data-tab="problem">Problem Players</button>
@@ -23,8 +24,23 @@
 
   <main>
 
+    <!-- ======================== HOME ======================== -->
+    <section id="tab-home" class="tab-content active">
+      <div class="section-header">
+        <h2>Last 30 Days</h2>
+        <button id="btn-sync-home" class="btn btn-secondary">🔄 Sync Leetify</button>
+      </div>
+
+      <div id="home-summary" class="summary-grid"></div>
+
+      <h3 class="section-sub">Player Stats</h3>
+      <div id="home-table-wrap">
+        <p class="empty-msg">No data yet. Add players and sync.</p>
+      </div>
+    </section>
+
     <!-- ======================== CURRENT SESSION ======================== -->
-    <section id="tab-session" class="tab-content active">
+    <section id="tab-session" class="tab-content hidden">
       <div class="section-header">
         <h2>Current Session</h2>
         <div class="actions">
@@ -71,6 +87,17 @@
       </div>
 
       <div id="players-list" class="player-grid"></div>
+
+      <!-- Steam Friends Browser -->
+      <div class="card" style="margin-top:24px">
+        <h3>Browse Steam Friends</h3>
+        <p class="hint" style="margin-bottom:12px">Enter a Steam64 ID to browse their friends and add them as tracked players.</p>
+        <div class="form-row">
+          <input id="input-friends-steam-id" type="text" placeholder="Your Steam64 ID" />
+          <button id="btn-load-friends" class="btn btn-secondary">Load Friends</button>
+        </div>
+      </div>
+      <div id="friends-grid" class="player-grid"></div>
     </section>
 
     <!-- ======================== PROBLEM PLAYERS ======================== -->

@@ -97,11 +97,54 @@ document.querySelectorAll(".nav-btn").forEach(btn => {
 });
 
 function loadTab(name) {
+  if (name === "home")     loadHome();
   if (name === "session")  loadCurrentSession();
   if (name === "alltime")  loadAllTime();
   if (name === "players")  loadPlayers();
   if (name === "problem")  loadProblemPlayers();
   if (name === "ai")       loadAnalyses();
+}
+
+// ------------------------------------------------------------------ //
+// Home Tab – Last 30 Days                                             //
+// ------------------------------------------------------------------ //
+
+async function loadHome() {
+  try {
+    const players = await api("GET", "/api/stats/monthly");
+    const summaryEl = document.getElementById("home-summary");
+    const tableEl   = document.getElementById("home-table-wrap");
+
+    // Build summary cards
+    const active = players.filter(p => p.games > 0);
+    const topPlayer  = active.length ? active[0] : null;
+    const totalKills = active.reduce((s, p) => s + p.total_kills, 0);
+    const avgRating  = active.length
+      ? (active.reduce((s, p) => s + p.avg_rating, 0) / active.length).toFixed(2)
+      : "—";
+
+    summaryEl.innerHTML = `
+      <div class="summary-card">
+        <div class="summary-label">Active Players</div>
+        <div class="summary-value">${active.length}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Top Player (Rating)</div>
+        <div class="summary-value">${topPlayer ? topPlayer.username : "—"}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Total Kills (30d)</div>
+        <div class="summary-value">${totalKills}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Avg HLTV Rating</div>
+        <div class="summary-value">${avgRating}</div>
+      </div>`;
+
+    tableEl.innerHTML = statsTable(players);
+  } catch (e) {
+    toast(e.message, "error");
+  }
 }
 
 // ------------------------------------------------------------------ //
@@ -194,6 +237,52 @@ async function removePlayer(steamId) {
 }
 
 // ------------------------------------------------------------------ //
+// Steam Friends Browser                                                //
+// ------------------------------------------------------------------ //
+
+document.getElementById("btn-load-friends").addEventListener("click", async () => {
+  const steamId = document.getElementById("input-friends-steam-id").value.trim();
+  if (!steamId) { toast("Enter a Steam64 ID", "error"); return; }
+  const btn = document.getElementById("btn-load-friends");
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  try {
+    const friends = await api("GET", `/api/steam/friends/${steamId}`);
+    const grid = document.getElementById("friends-grid");
+    if (!friends.length) {
+      grid.innerHTML = `<p class="empty-msg">No friends found or friends list is private.</p>`;
+      return;
+    }
+    grid.innerHTML = friends.map(f => `
+      <div class="player-card">
+        ${f.avatar_url ? `<img src="${f.avatar_url}" alt="" onerror="this.style.display='none'">` : ""}
+        <span class="name">${f.username}</span>
+        <span class="steam-id">${f.steam_id}</span>
+        ${f.tracked
+          ? `<span class="badge-ok" style="padding:4px 10px">✓ Tracked</span>`
+          : `<button class="btn btn-primary" onclick="addFriend('${f.steam_id}', this)">+ Add</button>`
+        }
+      </div>`).join("");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Load Friends";
+  }
+});
+
+async function addFriend(steamId, btnEl) {
+  try {
+    await api("POST", "/api/players", { steam_id: steamId });
+    btnEl.outerHTML = `<span class="badge-ok" style="padding:4px 10px">✓ Tracked</span>`;
+    toast("Player added!");
+    loadPlayers();
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+// ------------------------------------------------------------------ //
 // Problem Players Tab                                                  //
 // ------------------------------------------------------------------ //
 
@@ -225,6 +314,7 @@ async function syncData(sessionId) {
     const body = sessionId ? { session_id: sessionId } : {};
     const result = await api("POST", "/api/sync", body);
     toast(`Synced ${result.synced_games} new games.${result.errors.length ? " Some errors." : ""}`);
+    loadHome();
     loadCurrentSession();
     loadAllTime();
   } catch (e) {
@@ -232,6 +322,7 @@ async function syncData(sessionId) {
   }
 }
 
+document.getElementById("btn-sync-home").addEventListener("click", () => syncData());
 document.getElementById("btn-sync").addEventListener("click", () => syncData());
 document.getElementById("btn-sync-alltime").addEventListener("click", () => syncData());
 
@@ -325,4 +416,4 @@ document.getElementById("btn-analyse").addEventListener("click", async () => {
 // Initial load                                                         //
 // ------------------------------------------------------------------ //
 
-loadCurrentSession();
+loadHome();

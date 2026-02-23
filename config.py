@@ -12,3 +12,4 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     LEETIFY_API_KEY = os.getenv("LEETIFY_API_KEY", "")
     LEETIFY_API_BASE = "https://api.leetify.com/api"
+    STEAM_API_KEY = os.getenv("STEAM_API_KEY", "")
