@@ -498,10 +498,10 @@ def test_parse_game_player_stats_new_api():
     assert s["headshots"] == 16
     # dpr is used directly as ADR
     assert s["adr"] == round(160.81, 1)
-    # leetify_rating used for both rating (no HLTV 2.0 in new API) and leetify_rating
-    assert s["leetify_rating"] == round(0.1232, 4)
-    assert s["ct_rating"] == round(0.0971, 4)
-    assert s["t_rating"] == round(0.2014, 4)
+    # New API leetify_rating fractions are scaled ×100 to match Leetify's display range
+    assert s["leetify_rating"] == round(0.1232 * 100, 2)   # 12.32
+    assert s["ct_rating"] == round(0.0971 * 100, 2)        # 9.71
+    assert s["t_rating"] == round(0.2014 * 100, 2)         # 20.14
 
 
 def test_parse_game_player_stats_new_api_team_scores():
@@ -944,6 +944,238 @@ def test_sync_handles_null_games_list(client, monkeypatch):
     res = client.post("/api/sync", json={})
     assert res.status_code == 200
     assert res.get_json()["synced_games"] == 0
+
+
+# ------------------------------------------------------------------ #
+# own_stats extraction from profile match entries                      #
+# ------------------------------------------------------------------ #
+
+def test_extract_own_stats_returns_none_when_no_kills():
+    """_extract_own_stats_from_match_entry returns None for bare metadata entries."""
+    from leetify import _extract_own_stats_from_match_entry
+    # Match entry with only metadata, no per-player stats
+    entry = {
+        "id": "match-1",
+        "map_name": "de_inferno",
+        "finished_at": "2026-02-22T20:00:00Z",
+        "score": [13, 10],
+    }
+    assert _extract_own_stats_from_match_entry(entry) is None
+
+
+def test_extract_own_stats_with_adr_field():
+    """own_stats extraction uses 'adr' field when present."""
+    from leetify import _extract_own_stats_from_match_entry
+    entry = {
+        "kills": 20,
+        "deaths": 16,
+        "assists": 18,
+        "adr": 90.0,
+        "hs_percent": 18.0,
+        "leetify_rating": -0.0196,
+        "ct_leetify_rating": -0.02,
+        "t_leetify_rating": -0.015,
+    }
+    stats = _extract_own_stats_from_match_entry(entry)
+    assert stats is not None
+    assert stats["kills"] == 20
+    assert stats["deaths"] == 16
+    assert stats["assists"] == 18
+    assert stats["adr"] == 90.0
+    # hs_percent=18% of 20 kills → 3 or 4 headshots
+    assert stats["headshots"] == round(18.0 / 100 * 20)
+    # Ratings scaled ×100
+    assert stats["leetify_rating"] == round(-0.0196 * 100, 2)
+    assert stats["ct_rating"] == round(-0.02 * 100, 2)
+    assert stats["t_rating"] == round(-0.015 * 100, 2)
+
+
+def test_extract_own_stats_with_dpr_field():
+    """own_stats extraction uses 'dpr' field when 'adr' is absent."""
+    from leetify import _extract_own_stats_from_match_entry
+    entry = {
+        "kills": 10,
+        "deaths": 6,
+        "dpr": 60.0,
+        "total_hs_kills": 6,
+        "leetify_rating": 0.0143,
+    }
+    stats = _extract_own_stats_from_match_entry(entry)
+    assert stats is not None
+    assert stats["adr"] == 60.0
+    assert stats["headshots"] == 6
+    assert stats["leetify_rating"] == round(0.0143 * 100, 2)
+
+
+def test_extract_own_stats_hs_percent_conversion():
+    """hs_percent is converted to approximate headshot kill count."""
+    from leetify import _extract_own_stats_from_match_entry
+    entry = {"kills": 25, "deaths": 10, "hs_percent": 40.0}
+    stats = _extract_own_stats_from_match_entry(entry)
+    # 40% of 25 kills = 10 headshots
+    assert stats["headshots"] == round(40.0 / 100 * 25)
+
+
+def test_parse_games_includes_own_stats_when_embedded():
+    """parse_games returns own_stats dict when match entry has per-player stats."""
+    from leetify import parse_games
+    profile = {
+        "recent_matches": [
+            {
+                "id": "match-abc",
+                "map_name": "de_inferno",
+                "finished_at": "2026-02-22T20:00:00Z",
+                "score": [13, 10],
+                "kills": 20,
+                "deaths": 16,
+                "assists": 18,
+                "adr": 90.0,
+                "hs_percent": 18.0,
+                "leetify_rating": -0.0196,
+                "ct_leetify_rating": -0.02,
+                "t_leetify_rating": -0.015,
+            }
+        ]
+    }
+    games = parse_games(profile)
+    assert len(games) == 1
+    g = games[0]
+    assert g["match_id"] == "match-abc"
+    assert g["own_stats"] is not None
+    assert g["own_stats"]["kills"] == 20
+    assert g["own_stats"]["adr"] == 90.0
+    assert g["own_stats"]["leetify_rating"] == round(-0.0196 * 100, 2)
+
+
+def test_parse_games_own_stats_none_for_metadata_only():
+    """parse_games sets own_stats=None for entries with only metadata fields."""
+    from leetify import parse_games
+    profile = {
+        "recent_matches": [
+            {
+                "id": "match-xyz",
+                "map_name": "de_nuke",
+                "finished_at": "2026-02-16T20:00:00Z",
+                "score": [13, 2],
+            }
+        ]
+    }
+    games = parse_games(profile)
+    assert len(games) == 1
+    assert games[0]["own_stats"] is None
+
+
+def test_parse_game_player_stats_adr_field_fallback():
+    """_parse_player_game_stats uses 'adr' when 'dpr' is absent."""
+    from leetify import parse_game_player_stats
+    game_details = {
+        "stats": [
+            {
+                "steam64_id": "76561198000000001",
+                "total_kills": 15,
+                "total_deaths": 10,
+                "total_assists": 5,
+                "adr": 75.5,   # 'dpr' absent, 'adr' present
+                "total_hs_kills": 5,
+                "leetify_rating": 0.05,
+            }
+        ],
+        "team_scores": [{"team_number": 1, "score": 13}, {"team_number": 2, "score": 8}],
+    }
+    stats = parse_game_player_stats(game_details)
+    assert len(stats) == 1
+    s = stats[0]
+    assert s["adr"] == 75.5
+    assert s["leetify_rating"] == round(0.05 * 100, 2)
+
+
+def test_parse_game_player_stats_hs_percent_fallback():
+    """_parse_player_game_stats converts hs_percent to headshot count."""
+    from leetify import parse_game_player_stats
+    game_details = {
+        "stats": [
+            {
+                "steam64_id": "76561198000000001",
+                "total_kills": 20,
+                "total_deaths": 12,
+                "total_assists": 3,
+                "dpr": 85.0,
+                "hs_percent": 30.0,  # 30% of 20 kills = 6 headshots
+            }
+        ],
+        "team_scores": [{"team_number": 1, "score": 16}, {"team_number": 2, "score": 8}],
+    }
+    stats = parse_game_player_stats(game_details)
+    assert len(stats) == 1
+    s = stats[0]
+    assert s["headshots"] == round(30.0 / 100 * 20)  # 6
+
+
+def test_sync_uses_own_stats_for_adr_and_hs(client, monkeypatch, app):
+    """Sync uses own_stats from the match entry to populate ADR and HS% correctly."""
+    # The profile match entry has ADR and HS% embedded.
+    # The game_details response intentionally omits dpr/total_hs_kills to
+    # simulate the public API returning null for those fields.
+    fake_profile = {
+        "steam64_id": "76561198000000001",
+        "name": "TestPlayer",
+        "recent_matches": [
+            {
+                "id": "own-stats-match",
+                "map_name": "de_inferno",
+                "finished_at": "2026-02-22T20:00:00Z",
+                "score": [13, 10],
+                # Per-player stats embedded in match entry
+                "kills": 20,
+                "deaths": 16,
+                "assists": 18,
+                "adr": 90.0,
+                "hs_percent": 18.0,
+                "leetify_rating": -0.0196,
+                "ct_leetify_rating": -0.02,
+                "t_leetify_rating": -0.015,
+            }
+        ],
+    }
+    # Game details returns stats but without ADR/HS% (public API limitation)
+    fake_game_details = {
+        "stats": [
+            {
+                "steam64_id": "76561198000000001",
+                "total_kills": 20,
+                "total_deaths": 16,
+                "total_assists": 7,   # lower than profile's 18
+                # dpr and total_hs_kills absent (null in real public API)
+                "leetify_rating": -0.0196,
+            }
+        ],
+        "team_scores": [
+            {"team_number": 1, "score": 13},
+            {"team_number": 2, "score": 10},
+        ],
+    }
+
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    monkeypatch.setattr("leetify.get_player_matches", lambda *a, **kw: [])
+    monkeypatch.setattr("leetify.get_game_details", lambda *a, **kw: fake_game_details)
+
+    client.post("/api/players", json={"steam_id": "76561198000000001"})
+    sync_res = client.post("/api/sync", json={})
+    assert sync_res.status_code == 200
+
+    stats_res = client.get("/api/stats/76561198000000001").get_json()
+    assert stats_res["stats"]["games"] == 1
+    # own_stats values should be used: ADR and assists from profile entry
+    games = stats_res["games"]
+    assert len(games) == 1
+    pg = games[0]
+    assert pg["kills"] == 20
+    assert pg["deaths"] == 16
+    assert pg["assists"] == 18         # from own_stats (profile), not game_details (7)
+    assert pg["adr"] == 90.0           # from own_stats (profile), not 0.0 from game_details
+    # hs_percent 18% of 20 kills → 4 headshots → headshot_pct ≈ 20%
+    assert pg["headshots"] == round(18.0 / 100 * 20)
+    assert pg["leetify_rating"] == round(-0.0196 * 100, 2)  # -1.96
 
 
 # ------------------------------------------------------------------ #

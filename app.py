@@ -238,11 +238,6 @@ def create_app(config_class=Config):
                 # Build a lookup from steam_id → stats for all players in the game
                 stats_by_steam_id = {s["steam_id"]: s for s in all_player_stats if s.get("steam_id")}
 
-                # Save stats for the current player
-                player_stats = stats_by_steam_id.get(player.steam_id)
-                if not player_stats:
-                    continue
-
                 def _upsert_player_game(p, ps):
                     pg = PlayerGame.query.filter_by(player_id=p.id, game_id=game.id).first()
                     if not pg:
@@ -261,7 +256,19 @@ def create_app(config_class=Config):
                     pg.opening_deaths = ps["opening_deaths"]
                     pg.utility_damage = ps["utility_damage"]
 
-                _upsert_player_game(player, player_stats)
+                # Save stats for the current player.
+                # Prefer own_stats from the profile match entry (contains ADR,
+                # HS%, and correct assists) over the game-details response
+                # which may omit those fields in the public API.
+                own_stats = g_data.get("own_stats")
+                player_stats = stats_by_steam_id.get(player.steam_id)
+                if own_stats is not None:
+                    _upsert_player_game(player, own_stats)
+                elif player_stats is not None:
+                    _upsert_player_game(player, player_stats)
+                else:
+                    # Player not found in this game – skip but still check friends
+                    pass
 
                 # Also save stats for any other tracked players found in this
                 # game – this covers friends who may not have their own Leetify
