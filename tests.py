@@ -48,11 +48,45 @@ def test_add_player_missing_steam_id(client):
 def test_add_player_no_leetify(client, monkeypatch):
     """When Leetify is unreachable the player is still saved with the steam_id as username."""
     monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: None)
+    monkeypatch.setattr("steam.get_player_summaries", lambda *a, **kw: [])
     res = client.post("/api/players", json={"steam_id": "76561198000000001"})
     assert res.status_code == 201
     data = res.get_json()
     assert data["steam_id"] == "76561198000000001"
     assert data["username"] == "76561198000000001"
+
+
+def test_add_player_no_leetify_steam_fallback(client, monkeypatch):
+    """When Leetify is unreachable and Steam API key is set, Steam provides the name."""
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: None)
+    monkeypatch.setattr("steam.get_player_summaries", lambda *a, **kw: [
+        {"steam_id": "76561198000000001", "username": "SteamUser",
+         "avatar_url": "https://steam.example.com/avatar.jpg", "profile_url": "", "real_name": ""},
+    ])
+    client.application.config["STEAM_API_KEY"] = "fake-steam-key"
+    res = client.post("/api/players", json={"steam_id": "76561198000000001"})
+    assert res.status_code == 201
+    data = res.get_json()
+    assert data["username"] == "SteamUser"
+    assert data["avatar_url"] == "https://steam.example.com/avatar.jpg"
+
+
+def test_add_player_leetify_no_name_steam_fallback(client, monkeypatch):
+    """When Leetify returns a profile without a name, Steam API provides the name."""
+    fake_profile = {
+        "meta": {"steam64Id": "76561198000000001", "name": "", "steamAvatarUrl": ""},
+        "games": [],
+    }
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    monkeypatch.setattr("steam.get_player_summaries", lambda *a, **kw: [
+        {"steam_id": "76561198000000001", "username": "SteamFallback",
+         "avatar_url": "https://steam.example.com/avatar.jpg", "profile_url": "", "real_name": ""},
+    ])
+    client.application.config["STEAM_API_KEY"] = "fake-steam-key"
+    res = client.post("/api/players", json={"steam_id": "76561198000000001"})
+    assert res.status_code == 201
+    data = res.get_json()
+    assert data["username"] == "SteamFallback"
 
 
 def test_add_player_with_leetify(client, monkeypatch):
@@ -315,7 +349,65 @@ def test_parse_game_player_stats():
     assert s["leetify_rating"] == 0.60
 
 
-def test_openai_client_no_key():
+def test_parse_games_null_games_list():
+    """parse_games should return [] when games key is explicitly null."""
+    from leetify import parse_games
+    assert parse_games({"games": None}) == []
+
+
+def test_parse_games_skips_null_entries():
+    """parse_games should skip None entries in the games list without raising."""
+    from leetify import parse_games
+    profile = {
+        "games": [
+            None,
+            {"gameId": "g1", "mapName": "de_dust2", "gameFinishedAt": "2024-01-01T18:00:00Z", "scores": [16, 8]},
+        ]
+    }
+    games = parse_games(profile)
+    assert len(games) == 1
+    assert games[0]["match_id"] == "g1"
+
+
+def test_parse_game_player_stats_null_player_stats():
+    """parse_game_player_stats should return [] when playerStats is null."""
+    from leetify import parse_game_player_stats
+    assert parse_game_player_stats({"playerStats": None, "teams": [{"score": 10}]}) == []
+
+
+def test_parse_game_player_stats_skips_null_entries():
+    """parse_game_player_stats should skip None entries in playerStats without raising."""
+    from leetify import parse_game_player_stats
+    game_details = {
+        "playerStats": [None, {"steam64Id": "123", "totalKills": 5, "totalDeaths": 3}],
+        "teams": [{"score": 10}],
+    }
+    stats = parse_game_player_stats(game_details)
+    assert len(stats) == 1
+    assert stats[0]["steam_id"] == "123"
+    assert stats[0]["kills"] == 5
+
+
+def test_parse_game_player_stats_skips_null_teams():
+    """parse_game_player_stats should ignore None team entries when computing total rounds."""
+    from leetify import parse_game_player_stats
+    game_details = {
+        "playerStats": [{"steam64Id": "123", "totalKills": 5, "totalDamage": 300.0}],
+        "teams": [None, {"score": 10}],
+    }
+    stats = parse_game_player_stats(game_details)
+    assert len(stats) == 1
+    assert stats[0]["adr"] == round(300.0 / 10, 1)
+
+
+def test_parse_player_info_empty_name():
+    """parse_player_info should return empty string when name is absent."""
+    from leetify import parse_player_info
+    info = parse_player_info({"meta": {"steam64Id": "123"}})
+    assert info["username"] == ""
+
+
+
     from openai_client import generate_analysis
     result = generate_analysis([{"username": "player1", "games": 1, "avg_rating": 1.0,
                                   "avg_kd": 1.2, "avg_adr": 75.0, "avg_hs_pct": 40.0,
@@ -548,11 +640,43 @@ def test_sync_reuses_todays_session(client, monkeypatch):
     assert len(sessions) == 1
 
 
+def test_sync_steam_fallback_for_name(client, monkeypatch):
+    """When Leetify profile has no name during sync, Steam API provides it."""
+    fake_profile = {
+        "meta": {"steam64Id": "76561198000000001", "name": "", "steamAvatarUrl": ""},
+        "games": [],
+    }
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    monkeypatch.setattr("steam.get_player_summaries", lambda *a, **kw: [
+        {"steam_id": "76561198000000001", "username": "SteamName",
+         "avatar_url": "https://steam.example.com/avatar.jpg", "profile_url": "", "real_name": ""},
+    ])
+    client.application.config["STEAM_API_KEY"] = "fake-steam-key"
+    client.post("/api/players", json={"steam_id": "76561198000000001"})
+
+    res = client.post("/api/sync", json={})
+    assert res.status_code == 200
+
+    players = client.get("/api/players").get_json()
+    assert players[0]["username"] == "SteamName"
+
+
+def test_sync_handles_null_games_list(client, monkeypatch):
+    """sync should not raise when Leetify returns null for games list."""
+    fake_profile = {
+        "meta": {"steam64Id": "76561198000000001", "name": "Player1", "steamAvatarUrl": ""},
+        "games": None,
+    }
+    monkeypatch.setattr("leetify.get_player_profile", lambda *a, **kw: fake_profile)
+    client.post("/api/players", json={"steam_id": "76561198000000001"})
+    res = client.post("/api/sync", json={})
+    assert res.status_code == 200
+    assert res.get_json()["synced_games"] == 0
+
+
 # ------------------------------------------------------------------ #
 # Steam client unit tests                                              #
 # ------------------------------------------------------------------ #
-
-def test_steam_parse_summary():
     from steam import _parse_summary
     raw = {
         "steamid": "76561198000000001",

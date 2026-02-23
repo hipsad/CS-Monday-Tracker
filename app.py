@@ -54,14 +54,28 @@ def create_app(config_class=Config):
         # Fetch identity from Leetify
         profile = leetify_client.get_player_profile(steam_id, api_key=app.config["LEETIFY_API_KEY"])
         if not profile:
-            # Create player with just the steam_id; sync can fill in the rest later
-            player = Player(steam_id=steam_id, username=steam_id)
+            # Fall back to Steam API for name/avatar when Leetify is unavailable
+            username = steam_id
+            avatar_url = ""
+            if app.config["STEAM_API_KEY"]:
+                steam_info = steam_client.get_player_summaries([steam_id], api_key=app.config["STEAM_API_KEY"])
+                if steam_info:
+                    username = steam_info[0]["username"] or steam_id
+                    avatar_url = steam_info[0]["avatar_url"] or ""
+            player = Player(steam_id=steam_id, username=username, avatar_url=avatar_url)
         else:
             info = leetify_client.parse_player_info(profile)
+            username = info["username"]
+            avatar_url = info["avatar_url"]
+            if not username and app.config["STEAM_API_KEY"]:
+                steam_info = steam_client.get_player_summaries([steam_id], api_key=app.config["STEAM_API_KEY"])
+                if steam_info:
+                    username = steam_info[0]["username"]
+                    avatar_url = avatar_url or steam_info[0]["avatar_url"]
             player = Player(
                 steam_id=steam_id,
-                username=info["username"],
-                avatar_url=info["avatar_url"],
+                username=username or steam_id,
+                avatar_url=avatar_url,
             )
 
         db.session.add(player)
@@ -173,8 +187,15 @@ def create_app(config_class=Config):
 
             # Update player identity
             info = leetify_client.parse_player_info(profile)
-            player.username = info["username"] or player.username
-            player.avatar_url = info["avatar_url"] or player.avatar_url
+            username = info["username"]
+            avatar_url = info["avatar_url"]
+            if not username and app.config["STEAM_API_KEY"]:
+                steam_info = steam_client.get_player_summaries([player.steam_id], api_key=app.config["STEAM_API_KEY"])
+                if steam_info:
+                    username = steam_info[0]["username"]
+                    avatar_url = avatar_url or steam_info[0]["avatar_url"]
+            player.username = username or player.username
+            player.avatar_url = avatar_url or player.avatar_url
 
             parsed_games = leetify_client.parse_games(profile)
             for g_data in parsed_games:
