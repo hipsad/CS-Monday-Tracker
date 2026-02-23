@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CS Monday Tracker</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>🎮 CS Monday Tracker</h1>
+      <p class="subtitle">Muck Boys Performance Dashboard</p>
+    </div>
+    <nav>
+      <button class="nav-btn active" data-tab="session">Current Session</button>
+      <button class="nav-btn" data-tab="alltime">All-Time Stats</button>
+      <button class="nav-btn" data-tab="players">Players</button>
+      <button class="nav-btn" data-tab="problem">Problem Players</button>
+      <button class="nav-btn" data-tab="ai">AI Analysis</button>
+    </nav>
+  </header>
+
+  <main>
+
+    <!-- ======================== CURRENT SESSION ======================== -->
+    <section id="tab-session" class="tab-content active">
+      <div class="section-header">
+        <h2>Current Session</h2>
+        <div class="actions">
+          <button id="btn-new-session" class="btn btn-primary">+ New Session</button>
+          <button id="btn-sync" class="btn btn-secondary">🔄 Sync Leetify</button>
+        </div>
+      </div>
+
+      <div id="session-info" class="card hidden">
+        <h3 id="session-name"></h3>
+        <p id="session-date" class="muted"></p>
+        <p id="session-notes" class="muted"></p>
+      </div>
+
+      <div id="session-table-wrap">
+        <p class="empty-msg">No session yet. Create a session and sync data.</p>
+      </div>
+    </section>
+
+    <!-- ======================== ALL-TIME STATS ======================== -->
+    <section id="tab-alltime" class="tab-content hidden">
+      <div class="section-header">
+        <h2>All-Time Stats</h2>
+        <button id="btn-sync-alltime" class="btn btn-secondary">🔄 Sync Leetify</button>
+      </div>
+      <div id="alltime-table-wrap">
+        <p class="empty-msg">No data yet. Add players and sync.</p>
+      </div>
+    </section>
+
+    <!-- ======================== PLAYERS ======================== -->
+    <section id="tab-players" class="tab-content hidden">
+      <div class="section-header">
+        <h2>Tracked Players</h2>
+      </div>
+
+      <div class="card add-player-card">
+        <h3>Add Player</h3>
+        <div class="form-row">
+          <input id="input-steam-id" type="text" placeholder="Steam64 ID (e.g. 76561198012345678)" />
+          <button id="btn-add-player" class="btn btn-primary">Add</button>
+        </div>
+        <p class="hint">Find your Steam64 ID at <a href="https://steamid.io" target="_blank">steamid.io</a></p>
+      </div>
+
+      <div id="players-list" class="player-grid"></div>
+    </section>
+
+    <!-- ======================== PROBLEM PLAYERS ======================== -->
+    <section id="tab-problem" class="tab-content hidden">
+      <div class="section-header">
+        <h2>Problem Players 🚨</h2>
+        <p class="muted">Ranked by lowest performance score</p>
+      </div>
+      <div id="problem-table-wrap">
+        <p class="empty-msg">No data yet.</p>
+      </div>
+    </section>
+
+    <!-- ======================== AI ANALYSIS ======================== -->
+    <section id="tab-ai" class="tab-content hidden">
+      <div class="section-header">
+        <h2>AI Performance Analysis 🤖</h2>
+      </div>
+
+      <div class="card">
+        <div class="form-row">
+          <select id="analysis-scope">
+            <option value="all_time">All Time</option>
+            <option value="session">Current Session</option>
+          </select>
+          <button id="btn-analyse" class="btn btn-primary">Generate Analysis</button>
+        </div>
+        <p class="hint">Requires an OpenAI API key set in your <code>.env</code> file.</p>
+      </div>
+
+      <div id="analysis-result" class="hidden">
+        <div class="card analysis-card">
+          <div id="analysis-text"></div>
+          <p id="analysis-meta" class="muted"></p>
+        </div>
+      </div>
+
+      <div id="past-analyses"></div>
+    </section>
+
+  </main>
+
+  <!-- ======================== MODALS ======================== -->
+  <div id="modal-overlay" class="hidden">
+    <div id="modal-new-session" class="modal">
+      <h3>New Session</h3>
+      <label>Name <input id="ns-name" type="text" placeholder="Monday Night – March 3" /></label>
+      <label>Notes <textarea id="ns-notes" rows="2" placeholder="Optional notes..."></textarea></label>
+      <label>Players (hold Ctrl/Cmd to select multiple)
+        <select id="ns-players" multiple></select>
+      </label>
+      <div class="modal-actions">
+        <button id="ns-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="ns-create" class="btn btn-primary">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
