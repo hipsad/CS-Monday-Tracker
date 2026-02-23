@@ -156,8 +156,18 @@ def _extract_own_stats_from_match_entry(g: dict) -> dict | None:
     scaled ×100 to match Leetify's display range.
 
     Returns None when no per-player stats are present (e.g. the entry only
-    contains match metadata without any kill/death fields).
+    contains match metadata without any kill/death fields) or when the entry
+    contains unexpected data that cannot be parsed.
     """
+    try:
+        return _extract_own_stats_from_match_entry_unsafe(g)
+    except (TypeError, ValueError, AttributeError) as exc:
+        logger.warning("Could not extract own stats from match entry: %s", exc)
+        return None
+
+
+def _extract_own_stats_from_match_entry_unsafe(g: dict) -> dict | None:
+    """Internal implementation – may raise on malformed data."""
     # 'kills' or 'total_kills' acts as a signal that stats are embedded.
     kills_raw = g.get("kills") if g.get("kills") is not None else g.get("total_kills")
     if kills_raw is None:
@@ -176,7 +186,8 @@ def _extract_own_stats_from_match_entry(g: dict) -> dict | None:
     # Headshots: percentage-based field ('hs_percent' / 'hsp') or kill count
     hs_pct = g.get("hs_percent") if g.get("hs_percent") is not None else g.get("hsp")
     if hs_pct is not None:
-        headshots = round(float(hs_pct) / 100 * max(kills, 1))
+        # Convert percentage to headshot kill count; 0 kills → 0 headshots.
+        headshots = round(float(hs_pct) / 100 * kills) if kills > 0 else 0
     else:
         hs_raw = (
             g.get("total_hs_kills")
@@ -303,8 +314,8 @@ def _parse_player_game_stats(raw: dict, total_rounds: int = 0) -> dict:
         else raw.get("hsp")
     )
     if hs_pct_val is not None:
-        # Convert percentage to approximate headshot kill count
-        headshots = round(float(hs_pct_val) / 100 * max(kills, 1))
+        # Convert percentage to headshot kill count; 0 kills → 0 headshots.
+        headshots = round(float(hs_pct_val) / 100 * kills) if kills > 0 else 0
     else:
         headshots = int(_field("total_hs_kills", "shotsHitFoeHead", 0))
 
