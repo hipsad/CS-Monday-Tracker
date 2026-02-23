@@ -16,6 +16,7 @@
       <button class="nav-btn active" data-tab="home">Home</button>
       <button class="nav-btn" data-tab="session">Current Session</button>
       <button class="nav-btn" data-tab="alltime">All-Time Stats</button>
+      <button class="nav-btn" data-tab="records">Records</button>
       <button class="nav-btn" data-tab="players">Players</button>
       <button class="nav-btn" data-tab="problem">Problem Players</button>
       <button class="nav-btn" data-tab="ai">AI Analysis</button>
@@ -58,6 +59,27 @@
       <div id="session-table-wrap">
         <p class="empty-msg">No session yet. Create a session and sync data.</p>
       </div>
+    </section>
+
+    <!-- ======================== RECORDS ======================== -->
+    <section id="tab-records" class="tab-content hidden">
+      <div class="section-header">
+        <h2>All-Time Records 🏆</h2>
+        <p class="muted">Best single-game performances</p>
+      </div>
+      <div id="records-grid" class="summary-grid">
+        <p class="empty-msg">No data yet. Add players and sync.</p>
+      </div>
+
+      <h3 class="section-sub" style="margin-top:28px">Player Details</h3>
+      <div id="records-player-select-wrap" class="card" style="margin-bottom:16px">
+        <div class="form-row">
+          <select id="records-player-select">
+            <option value="">— Select a player —</option>
+          </select>
+        </div>
+      </div>
+      <div id="records-player-detail"></div>
     </section>
 
     <!-- ======================== ALL-TIME STATS ======================== -->
@@ -141,6 +163,17 @@
   </main>
 
   <!-- ======================== MODALS ======================== -->
+  <!-- ======================== PLAYER DETAIL MODAL ======================== -->
+  <div id="player-modal-overlay" class="hidden">
+    <div id="player-modal" class="modal" style="width:700px;max-width:96vw">
+      <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h3 id="player-modal-title" style="margin:0"></h3>
+        <button id="player-modal-close" class="btn btn-ghost" style="padding:4px 10px">✕</button>
+      </div>
+      <div id="player-modal-body"></div>
+    </div>
+  </div>
+
   <div id="modal-overlay" class="hidden">
     <div id="modal-new-session" class="modal">
       <h3>New Session</h3>
