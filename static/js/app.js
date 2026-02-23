@@ -46,7 +46,7 @@ function statsTable(players, extraCols = []) {
     return `
       <tr>
         <td class="rank">#${i + 1}</td>
-        <td><div class="player-cell">${avatar}<span class="username">${p.username}</span></div></td>
+        <td><div class="player-cell">${avatar}<span class="username player-link" data-steamid="${p.steam_id}" style="cursor:pointer;text-decoration:underline dotted">${p.username}</span></div></td>
         <td>${p.games}</td>
         <td>${fmtRating(p.avg_rating)}</td>
         <td>${fmtRating(p.avg_leetify_rating)}</td>
@@ -100,6 +100,7 @@ function loadTab(name) {
   if (name === "home")     loadHome();
   if (name === "session")  loadCurrentSession();
   if (name === "alltime")  loadAllTime();
+  if (name === "records")  loadRecords();
   if (name === "players")  loadPlayers();
   if (name === "problem")  loadProblemPlayers();
   if (name === "ai")       loadAnalyses();
@@ -305,8 +306,144 @@ async function loadProblemPlayers() {
 }
 
 // ------------------------------------------------------------------ //
-// Sync Button                                                          //
+// Records Tab                                                         //
 // ------------------------------------------------------------------ //
+
+async function loadRecords() {
+  try {
+    const [records, players] = await Promise.all([
+      api("GET", "/api/stats/records"),
+      api("GET", "/api/players"),
+    ]);
+
+    // ---- Best-performance highlight cards ----
+    const grid = document.getElementById("records-grid");
+    const entries = Object.values(records);
+    if (!entries.length) {
+      grid.innerHTML = `<p class="empty-msg">No data yet. Add players and sync.</p>`;
+    } else {
+      grid.innerHTML = entries.map(r => {
+        const avatar = r.avatar_url
+          ? `<img src="${r.avatar_url}" alt="" style="width:32px;height:32px;border-radius:50%;vertical-align:middle;margin-right:8px;" onerror="this.style.display='none'">`
+          : "";
+        const date = r.played_at ? new Date(r.played_at).toLocaleDateString() : "";
+        return `
+          <div class="summary-card" style="cursor:pointer" onclick="showPlayerDetail('${r.steam_id}')">
+            <div class="summary-label">🏆 ${r.label}</div>
+            <div class="summary-value">${r.value}</div>
+            <div style="margin-top:8px;font-size:12px">${avatar}<span style="font-weight:600">${r.username}</span></div>
+            <div style="margin-top:4px;color:var(--muted);font-size:11px">${r.map_name}${date ? " · " + date : ""}</div>
+          </div>`;
+      }).join("");
+    }
+
+    // ---- Player selector for detailed game history ----
+    const sel = document.getElementById("records-player-select");
+    sel.innerHTML = `<option value="">— Select a player —</option>` +
+      players.map(p => `<option value="${p.steam_id}">${p.username}</option>`).join("");
+
+    document.getElementById("records-player-detail").innerHTML = "";
+
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+document.getElementById("records-player-select").addEventListener("change", async function () {
+  const steamId = this.value;
+  if (!steamId) {
+    document.getElementById("records-player-detail").innerHTML = "";
+    return;
+  }
+  await showPlayerDetail(steamId);
+});
+
+async function showPlayerDetail(steamId) {
+  const wrap = document.getElementById("records-player-detail");
+  wrap.innerHTML = `<p class="muted" style="text-align:center;padding:20px">Loading…</p>`;
+
+  // Update the selector if called from a card click
+  const sel = document.getElementById("records-player-select");
+  if (sel && sel.value !== steamId) sel.value = steamId;
+
+  try {
+    const data = await api("GET", `/api/stats/${steamId}`);
+    const p = data.player;
+    const s = data.stats;
+    const games = data.games;
+
+    const avatar = p.avatar_url
+      ? `<img src="${p.avatar_url}" alt="" style="width:48px;height:48px;border-radius:50%;vertical-align:middle;margin-right:12px;" onerror="this.style.display='none'">`
+      : "";
+
+    const gameRows = (games || []).map(g => {
+      const d = g.game.played_at ? new Date(g.game.played_at).toLocaleDateString() : "—";
+      return `
+        <tr>
+          <td>${d}</td>
+          <td>${g.game.map_name || "—"}</td>
+          <td>${g.kills}</td>
+          <td>${g.deaths}</td>
+          <td>${g.assists}</td>
+          <td>${fmtRating(g.rating)}</td>
+          <td>${fmtRating(g.leetify_rating)}</td>
+          <td>${(parseFloat(g.adr) || 0).toFixed(1)}</td>
+          <td>${(parseFloat(g.headshot_pct) || 0).toFixed(1)}%</td>
+        </tr>`;
+    }).join("");
+
+    wrap.innerHTML = `
+      <div class="card">
+        <div style="display:flex;align-items:center;margin-bottom:16px">
+          ${avatar}
+          <div>
+            <div style="font-size:17px;font-weight:700">${p.username}</div>
+            <div class="muted" style="font-size:11px">${p.steam_id}</div>
+          </div>
+        </div>
+        <div class="summary-grid" style="margin-bottom:16px">
+          <div class="summary-card"><div class="summary-label">Games</div><div class="summary-value">${s.games}</div></div>
+          <div class="summary-card"><div class="summary-label">Avg HLTV</div><div class="summary-value">${(s.avg_rating||0).toFixed(2)}</div></div>
+          <div class="summary-card"><div class="summary-label">Avg ADR</div><div class="summary-value">${(s.avg_adr||0).toFixed(1)}</div></div>
+          <div class="summary-card"><div class="summary-label">Avg HS%</div><div class="summary-value">${(s.avg_hs_pct||0).toFixed(1)}%</div></div>
+          <div class="summary-card"><div class="summary-label">K/D</div><div class="summary-value">${(s.avg_kd||0).toFixed(2)}</div></div>
+          <div class="summary-card"><div class="summary-label">Total Kills</div><div class="summary-value">${s.total_kills}</div></div>
+        </div>
+        ${games && games.length ? `
+        <div style="overflow-x:auto">
+          <table class="stats-table">
+            <thead><tr>
+              <th>Date</th><th>Map</th><th>K</th><th>D</th><th>A</th>
+              <th>HLTV</th><th>Leetify</th><th>ADR</th><th>HS%</th>
+            </tr></thead>
+            <tbody>${gameRows}</tbody>
+          </table>
+        </div>` : `<p class="empty-msg">No game history yet.</p>`}
+      </div>`;
+  } catch (e) {
+    wrap.innerHTML = `<p class="empty-msg">Could not load player data.</p>`;
+    toast(e.message, "error");
+  }
+}
+
+// Event delegation: clicking a player name in any stats table opens their detail
+document.addEventListener("click", e => {
+  const el = e.target.closest(".player-link");
+  if (!el) return;
+  const steamId = el.dataset.steamid;
+  if (!steamId) return;
+  // Switch to Records tab and show detail
+  document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".tab-content").forEach(s => { s.classList.add("hidden"); s.classList.remove("active"); });
+  const recordsBtn = document.querySelector('.nav-btn[data-tab="records"]');
+  recordsBtn.classList.add("active");
+  const tab = document.getElementById("tab-records");
+  tab.classList.remove("hidden");
+  tab.classList.add("active");
+  loadRecords().then(() => showPlayerDetail(steamId));
+});
+
+
 
 async function syncData(sessionId) {
   try {

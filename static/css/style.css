@@ -243,6 +243,9 @@ main { max-width: 1100px; margin: 0 auto; padding: 24px 20px; }
   margin-bottom: 12px;
 }
 
+/* Player name clickable link in tables */
+.player-link:hover { color: var(--accent2); }
+
 /* ===== Toast ===== */
 .toast {
   position: fixed;

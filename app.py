@@ -197,7 +197,17 @@ def create_app(config_class=Config):
             player.username = username or player.username
             player.avatar_url = avatar_url or player.avatar_url
 
-            parsed_games = leetify_client.parse_games(profile)
+            # Try the dedicated match-history endpoint for a complete list;
+            # fall back to the recent_matches included in the profile.
+            match_list = leetify_client.get_player_matches(
+                player.steam_id, api_key=app.config["LEETIFY_API_KEY"]
+            )
+            if not match_list:
+                match_list = profile.get("recent_matches") or profile.get("games") or []
+
+            # Build a synthetic profile-like dict so parse_games can normalise
+            # the list regardless of which endpoint provided it.
+            parsed_games = leetify_client.parse_games({"recent_matches": match_list})
             for g_data in parsed_games:
                 match_id = g_data["match_id"]
                 if not match_id:
@@ -225,31 +235,43 @@ def create_app(config_class=Config):
                     db.session.flush()  # get game.id
                     synced_games += 1
 
-                # Find this player's stats in the game
-                player_stats = next(
-                    (s for s in all_player_stats if s.get("steam_id") == player.steam_id),
-                    None,
-                )
+                # Build a lookup from steam_id → stats for all players in the game
+                stats_by_steam_id = {s["steam_id"]: s for s in all_player_stats if s.get("steam_id")}
+
+                # Save stats for the current player
+                player_stats = stats_by_steam_id.get(player.steam_id)
                 if not player_stats:
                     continue
 
-                pg = PlayerGame.query.filter_by(player_id=player.id, game_id=game.id).first()
-                if not pg:
-                    pg = PlayerGame(player_id=player.id, game_id=game.id)
-                    db.session.add(pg)
+                def _upsert_player_game(p, ps):
+                    pg = PlayerGame.query.filter_by(player_id=p.id, game_id=game.id).first()
+                    if not pg:
+                        pg = PlayerGame(player_id=p.id, game_id=game.id)
+                        db.session.add(pg)
+                    pg.kills = ps["kills"]
+                    pg.deaths = ps["deaths"]
+                    pg.assists = ps["assists"]
+                    pg.headshots = ps["headshots"]
+                    pg.adr = ps["adr"]
+                    pg.rating = ps["rating"]
+                    pg.leetify_rating = ps["leetify_rating"]
+                    pg.ct_rating = ps["ct_rating"]
+                    pg.t_rating = ps["t_rating"]
+                    pg.opening_kills = ps["opening_kills"]
+                    pg.opening_deaths = ps["opening_deaths"]
+                    pg.utility_damage = ps["utility_damage"]
 
-                pg.kills = player_stats["kills"]
-                pg.deaths = player_stats["deaths"]
-                pg.assists = player_stats["assists"]
-                pg.headshots = player_stats["headshots"]
-                pg.adr = player_stats["adr"]
-                pg.rating = player_stats["rating"]
-                pg.leetify_rating = player_stats["leetify_rating"]
-                pg.ct_rating = player_stats["ct_rating"]
-                pg.t_rating = player_stats["t_rating"]
-                pg.opening_kills = player_stats["opening_kills"]
-                pg.opening_deaths = player_stats["opening_deaths"]
-                pg.utility_damage = player_stats["utility_damage"]
+                _upsert_player_game(player, player_stats)
+
+                # Also save stats for any other tracked players found in this
+                # game – this covers friends who may not have their own Leetify
+                # profile accessible via the API.
+                for other_player in players:
+                    if other_player.steam_id == player.steam_id:
+                        continue
+                    other_stats = stats_by_steam_id.get(other_player.steam_id)
+                    if other_stats:
+                        _upsert_player_game(other_player, other_stats)
 
         db.session.commit()
         return jsonify({"synced_games": synced_games, "errors": errors})
@@ -337,6 +359,72 @@ def create_app(config_class=Config):
             games.append(entry)
         games.sort(key=lambda x: x["game"]["played_at"] or "", reverse=True)
         return jsonify({"player": player.to_dict(), "stats": agg, "games": games})
+
+    @app.route("/api/stats/records", methods=["GET"])
+    def stat_records():
+        """Return all-time single-game record holders for key stats."""
+        from models import PlayerGame, Game
+        from sqlalchemy import desc
+        records = {}
+        # (result_key, ORM column/property, display label, is_property)
+        # For @property fields (kd_ratio, headshot_pct) we must do a Python sort;
+        # for plain columns we let the DB do the ordering.
+        column_categories = [
+            ("best_rating",      PlayerGame.rating,          "HLTV Rating"),
+            ("best_adr",         PlayerGame.adr,             "ADR"),
+            ("most_kills",       PlayerGame.kills,           "Kills"),
+            ("most_assists",     PlayerGame.assists,         "Assists"),
+            ("best_leetify",     PlayerGame.leetify_rating,  "Leetify Rating"),
+            ("most_utility_dmg", PlayerGame.utility_damage,  "Utility Damage"),
+        ]
+        property_categories = [
+            ("best_hs_pct",  "headshot_pct",  "HS%"),
+            ("best_kd",      "kd_ratio",      "K/D Ratio"),
+        ]
+
+        for key, col, label in column_categories:
+            best_pg = (
+                PlayerGame.query
+                .join(PlayerGame.game)
+                .order_by(desc(col))
+                .first()
+            )
+            if not best_pg:
+                continue
+            val = float(getattr(best_pg, col.key) or 0)
+            if val == 0:
+                continue
+            records[key] = {
+                "label": label,
+                "value": round(val, 2),
+                "username": best_pg.player.username,
+                "avatar_url": best_pg.player.avatar_url,
+                "steam_id": best_pg.player.steam_id,
+                "map_name": best_pg.game.map_name,
+                "played_at": best_pg.game.played_at.isoformat() if best_pg.game.played_at else None,
+                "match_id": best_pg.game.match_id,
+            }
+
+        # Property-based categories require loading all records
+        all_pgs = PlayerGame.query.join(PlayerGame.game).all()
+        if all_pgs:
+            for key, attr, label in property_categories:
+                best_pg = max(all_pgs, key=lambda pg, a=attr: getattr(pg, a) or 0)
+                val = getattr(best_pg, attr) or 0
+                if val == 0:
+                    continue
+                records[key] = {
+                    "label": label,
+                    "value": round(float(val), 2),
+                    "username": best_pg.player.username,
+                    "avatar_url": best_pg.player.avatar_url,
+                    "steam_id": best_pg.player.steam_id,
+                    "map_name": best_pg.game.map_name,
+                    "played_at": best_pg.game.played_at.isoformat() if best_pg.game.played_at else None,
+                    "match_id": best_pg.game.match_id,
+                }
+
+        return jsonify(records)
 
     @app.route("/api/stats/problem-players", methods=["GET"])
     def problem_players():
