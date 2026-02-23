@@ -46,9 +46,9 @@ def parse_player_info(profile: dict) -> dict:
     """Extract basic identity info from a Leetify profile response."""
     meta = profile.get("meta") or {}  # guard against explicit null in API response
     return {
-        "steam_id": meta.get("steam64Id", ""),
-        "username": meta.get("name", "Unknown"),
-        "avatar_url": meta.get("steamAvatarUrl", ""),
+        "steam_id": meta.get("steam64Id") or "",
+        "username": meta.get("name") or "",
+        "avatar_url": meta.get("steamAvatarUrl") or "",
     }
 
 
@@ -60,9 +60,11 @@ def parse_games(profile: dict) -> list[dict]:
     Player stats are NOT included here – call get_game_details() and
     parse_game_player_stats() separately for each match.
     """
-    games_raw = profile.get("games", [])
+    games_raw = profile.get("games") or []
     parsed = []
     for g in games_raw:
+        if not isinstance(g, dict):
+            continue
         # Leetify stores scores as [own_team_score, enemy_team_score]
         scores = g.get("scores", [0, 0])
 
@@ -91,10 +93,10 @@ def parse_game_player_stats(game_details: dict) -> list[dict]:
     The /api/games/{matchId} endpoint returns a dict with a 'playerStats'
     list and a 'teams' list (used to compute total rounds for ADR).
     """
-    player_stats_raw = game_details.get("playerStats", [])
-    teams = game_details.get("teams", [])
-    total_rounds = sum(t.get("score", 0) for t in teams) if teams else 0
-    return [_parse_player_game_stats(ps, total_rounds) for ps in player_stats_raw]
+    player_stats_raw = game_details.get("playerStats") or []
+    teams = game_details.get("teams") or []
+    total_rounds = sum(t.get("score", 0) for t in teams if isinstance(t, dict)) if teams else 0
+    return [_parse_player_game_stats(ps, total_rounds) for ps in player_stats_raw if isinstance(ps, dict)]
 
 
 def _parse_player_game_stats(raw: dict, total_rounds: int = 0) -> dict:
