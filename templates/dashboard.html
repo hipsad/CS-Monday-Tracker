@@ -17,6 +17,7 @@
       <button class="nav-btn" data-tab="session">Current Session</button>
       <button class="nav-btn" data-tab="alltime">All-Time Stats</button>
       <button class="nav-btn" data-tab="records">Records</button>
+      <button class="nav-btn" data-tab="player-stats">Player Stats</button>
       <button class="nav-btn" data-tab="players">Players</button>
       <button class="nav-btn" data-tab="problem">Problem Players</button>
       <button class="nav-btn" data-tab="ai">AI Analysis</button>
@@ -28,7 +29,7 @@
     <!-- ======================== HOME ======================== -->
     <section id="tab-home" class="tab-content active">
       <div class="section-header">
-        <h2>Last 30 Days</h2>
+        <h2>Last 30 Games</h2>
         <button id="btn-sync-home" class="btn btn-secondary">🔄 Sync Leetify</button>
       </div>
 
@@ -64,7 +65,7 @@
     <!-- ======================== RECORDS ======================== -->
     <section id="tab-records" class="tab-content hidden">
       <div class="section-header">
-        <h2>All-Time Records 🏆</h2>
+        <h2>Records 🏆 <span class="muted" style="font-size:13px;font-weight:400">(Since Jan 1 this year)</span></h2>
         <p class="muted">Best single-game performances</p>
       </div>
       <div id="records-grid" class="summary-grid">
@@ -90,6 +91,38 @@
       </div>
       <div id="alltime-table-wrap">
         <p class="empty-msg">No data yet. Add players and sync.</p>
+      </div>
+    </section>
+
+    <!-- ======================== PLAYER STATS ======================== -->
+    <section id="tab-player-stats" class="tab-content hidden">
+      <div class="section-header">
+        <h2>Player Stats</h2>
+        <p class="muted">Filterable per-player stats view</p>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="form-row" style="flex-wrap:wrap;gap:12px">
+          <select id="ps-player-select" style="min-width:200px">
+            <option value="">— Select a player —</option>
+          </select>
+          <div style="display:flex;gap:8px;flex-wrap:wrap" id="ps-stat-filters">
+            <label class="ps-filter-label"><input type="checkbox" class="ps-stat-toggle" data-col="rating" checked> Rating</label>
+            <label class="ps-filter-label"><input type="checkbox" class="ps-stat-toggle" data-col="kd" checked> K/D</label>
+            <label class="ps-filter-label"><input type="checkbox" class="ps-stat-toggle" data-col="adr" checked> ADR</label>
+            <label class="ps-filter-label"><input type="checkbox" class="ps-stat-toggle" data-col="hs" checked> HS%</label>
+            <label class="ps-filter-label"><input type="checkbox" class="ps-stat-toggle" data-col="kills" checked> Kills</label>
+            <label class="ps-filter-label"><input type="checkbox" class="ps-stat-toggle" data-col="deaths" checked> Deaths</label>
+            <label class="ps-filter-label"><input type="checkbox" class="ps-stat-toggle" data-col="assists"> Assists</label>
+            <label class="ps-filter-label"><input type="checkbox" class="ps-stat-toggle" data-col="utility"> Utility DMG</label>
+            <label class="ps-filter-label"><input type="checkbox" class="ps-stat-toggle" data-col="opening"> Opening Kills</label>
+          </div>
+        </div>
+      </div>
+
+      <div id="ps-summary" class="summary-grid" style="margin-bottom:20px"></div>
+      <div id="ps-table-wrap">
+        <p class="empty-msg">Select a player to view their stats.</p>
       </div>
     </section>
 
@@ -128,6 +161,17 @@
         <h2>Problem Players 🚨</h2>
         <p class="muted">Ranked by lowest performance score</p>
       </div>
+      <div class="card" style="margin-bottom:16px;border-left:3px solid var(--yellow)">
+        <h4 style="margin-bottom:6px">📊 How is the Problem Score calculated?</h4>
+        <p style="color:var(--muted);font-size:13px;line-height:1.6">
+          The <strong>Problem Score</strong> is a composite penalty metric — <em>higher = more problematic</em>.<br>
+          It is calculated as: <code>score = (1 / avg_rating) + (1 / avg_kd)</code><br>
+          Players with a low Leetify Rating and low K/D will receive a higher score.
+          A score above <span style="color:var(--red)">3.0</span> is flagged as high-concern,
+          above <span style="color:var(--yellow)">1.5</span> as moderate.
+          Only games with valid data are included in the averages.
+        </p>
+      </div>
       <div id="problem-table-wrap">
         <p class="empty-msg">No data yet.</p>
       </div>
@@ -140,14 +184,24 @@
       </div>
 
       <div class="card">
-        <div class="form-row">
-          <select id="analysis-scope">
-            <option value="all_time">All Time</option>
-            <option value="session">Current Session</option>
-          </select>
-          <button id="btn-analyse" class="btn btn-primary">Generate Analysis</button>
+        <div class="form-row" style="flex-wrap:wrap;gap:12px;align-items:flex-start">
+          <div>
+            <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:12px">SCOPE</label>
+            <select id="analysis-scope">
+              <option value="all_time">All Time</option>
+              <option value="session">Current Session</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:12px">PLAYERS (up to 5, leave blank for all)</label>
+            <select id="analysis-players" multiple style="min-width:220px;height:100px">
+            </select>
+          </div>
+          <div style="align-self:flex-end">
+            <button id="btn-analyse" class="btn btn-primary">Generate Analysis</button>
+          </div>
         </div>
-        <p class="hint">Requires an OpenAI API key set in your <code>.env</code> file.</p>
+        <p class="hint" style="margin-top:10px">Requires an OpenAI API key set in your <code>.env</code> file. The AI will analyse strengths, weaknesses, and strategies for the selected players.</p>
       </div>
 
       <div id="analysis-result" class="hidden">
