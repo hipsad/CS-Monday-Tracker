@@ -239,6 +239,8 @@ def _extract_own_stats_from_match_entry_unsafe(g: dict) -> dict | None:
         "opening_kills": int(g.get("openingKills") or 0),
         "opening_deaths": int(g.get("openingDeaths") or 0),
         "utility_damage": float(g.get("utilityDamage") or 0),
+        # Full raw match entry preserved for access to all extended stats fields
+        "raw_stats": g,
     }
 
 
@@ -393,4 +395,6 @@ def _parse_player_game_stats(raw: dict, total_rounds: int = 0) -> dict:
         "opening_kills": opening_kills,
         "opening_deaths": opening_deaths,
         "utility_damage": utility_damage,
+        # Full raw API data preserved for access to all extended stats fields
+        "raw_stats": raw,
     }

@@ -77,6 +77,8 @@ class PlayerGame(db.Model):
     opening_kills = db.Column(db.Integer, default=0)
     opening_deaths = db.Column(db.Integer, default=0)
     utility_damage = db.Column(db.Float, default=0.0)
+    # All extra stats from the Leetify API stored as JSON for extensibility
+    raw_stats = db.Column(db.JSON, nullable=True)
 
     player = db.relationship("Player", back_populates="games")
     game = db.relationship("Game", back_populates="player_games")
@@ -90,7 +92,7 @@ class PlayerGame(db.Model):
         return round((self.headshots / max(self.kills, 1)) * 100, 1)
 
     def to_dict(self):
-        return {
+        d = {
             "id": self.id,
             "player_id": self.player_id,
             "game_id": self.game_id,
@@ -109,6 +111,9 @@ class PlayerGame(db.Model):
             "opening_deaths": self.opening_deaths,
             "utility_damage": self.utility_damage,
         }
+        if self.raw_stats:
+            d["raw_stats"] = self.raw_stats
+        return d
 
 
 class Session(db.Model):
