@@ -17,6 +17,7 @@
       <button class="nav-btn" data-tab="session">Current Session</button>
       <button class="nav-btn" data-tab="alltime">All-Time Stats</button>
       <button class="nav-btn" data-tab="records">Records</button>
+      <button class="nav-btn" data-tab="win-stats">Win Stats</button>
       <button class="nav-btn" data-tab="player-stats">Player Stats</button>
       <button class="nav-btn" data-tab="players">Players</button>
       <button class="nav-btn" data-tab="problem">Problem Players</button>
@@ -30,7 +31,7 @@
     <section id="tab-home" class="tab-content active">
       <div class="section-header">
         <h2>Last 15 Games</h2>
-        <button id="btn-sync-home" class="btn btn-secondary">🔄 Sync Leetify</button>
+        <button id="btn-sync-home" type="button" class="btn btn-secondary">🔄 Sync Leetify</button>
       </div>
 
       <div id="home-summary" class="summary-grid"></div>
@@ -46,8 +47,8 @@
       <div class="section-header">
         <h2>Current Session</h2>
         <div class="actions">
-          <button id="btn-new-session" class="btn btn-primary">+ New Session</button>
-          <button id="btn-sync" class="btn btn-secondary">🔄 Sync Leetify</button>
+          <button id="btn-new-session" type="button" class="btn btn-primary">+ New Session</button>
+          <button id="btn-sync" type="button" class="btn btn-secondary">🔄 Sync Leetify</button>
         </div>
       </div>
 
@@ -83,11 +84,35 @@
       <div id="records-player-detail"></div>
     </section>
 
+    <!-- ======================== WIN STATS ======================== -->
+    <section id="tab-win-stats" class="tab-content hidden">
+      <div class="section-header">
+        <h2>Win Stats 🏆</h2>
+        <p class="muted">Win/Loss records per player (last 15 games per player)</p>
+      </div>
+      <div id="win-stats-summary" class="summary-grid" style="margin-bottom:20px"></div>
+      <div id="win-stats-table-wrap">
+        <p class="empty-msg">No data yet. Add players and sync.</p>
+      </div>
+
+      <h3 class="section-sub" style="margin-top:28px">Individual Match History</h3>
+      <div class="card" style="margin-bottom:16px">
+        <div class="form-row">
+          <select id="win-stats-player-select" style="min-width:200px">
+            <option value="">— Select a player —</option>
+          </select>
+        </div>
+      </div>
+      <div id="win-stats-match-wrap">
+        <p class="empty-msg">Select a player to view their match history.</p>
+      </div>
+    </section>
+
     <!-- ======================== ALL-TIME STATS ======================== -->
     <section id="tab-alltime" class="tab-content hidden">
       <div class="section-header">
         <h2>All-Time Stats</h2>
-        <button id="btn-sync-alltime" class="btn btn-secondary">🔄 Sync Leetify</button>
+        <button id="btn-sync-alltime" type="button" class="btn btn-secondary">🔄 Sync Leetify</button>
       </div>
       <div id="alltime-table-wrap">
         <p class="empty-msg">No data yet. Add players and sync.</p>
@@ -136,7 +161,7 @@
         <h3>Add Player</h3>
         <div class="form-row">
           <input id="input-steam-id" type="text" placeholder="Steam64 ID (e.g. 76561198012345678)" />
-          <button id="btn-add-player" class="btn btn-primary">Add</button>
+          <button id="btn-add-player" type="button" class="btn btn-primary">Add</button>
         </div>
         <p class="hint">Find your Steam64 ID at <a href="https://steamid.io" target="_blank">steamid.io</a></p>
       </div>
@@ -149,7 +174,7 @@
         <p class="hint" style="margin-bottom:12px">Enter a Steam64 ID to browse their friends and add them as tracked players.</p>
         <div class="form-row">
           <input id="input-friends-steam-id" type="text" placeholder="Your Steam64 ID" />
-          <button id="btn-load-friends" class="btn btn-secondary">Load Friends</button>
+          <button id="btn-load-friends" type="button" class="btn btn-secondary">Load Friends</button>
         </div>
       </div>
       <div id="friends-grid" class="player-grid"></div>
@@ -198,7 +223,7 @@
             </select>
           </div>
           <div style="align-self:flex-end">
-            <button id="btn-analyse" class="btn btn-primary">Generate Analysis</button>
+            <button id="btn-analyse" type="button" class="btn btn-primary">Generate Analysis</button>
           </div>
         </div>
         <p class="hint" style="margin-top:10px">Requires an OpenAI API key set in your <code>.env</code> file. The AI will analyse strengths, weaknesses, and strategies for the selected players.</p>
@@ -222,7 +247,7 @@
     <div id="player-modal" class="modal" style="width:700px;max-width:96vw">
       <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <h3 id="player-modal-title" style="margin:0"></h3>
-        <button id="player-modal-close" class="btn btn-ghost" style="padding:4px 10px">✕</button>
+        <button id="player-modal-close" type="button" class="btn btn-ghost" style="padding:4px 10px">✕</button>
       </div>
       <div id="player-modal-body"></div>
     </div>
@@ -237,8 +262,8 @@
         <select id="ns-players" multiple></select>
       </label>
       <div class="modal-actions">
-        <button id="ns-cancel" class="btn btn-ghost">Cancel</button>
-        <button id="ns-create" class="btn btn-primary">Create</button>
+        <button id="ns-cancel" type="button" class="btn btn-ghost">Cancel</button>
+        <button id="ns-create" type="button" class="btn btn-primary">Create</button>
       </div>
     </div>
   </div>

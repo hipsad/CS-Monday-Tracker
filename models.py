@@ -79,6 +79,8 @@ class PlayerGame(db.Model):
     utility_damage = db.Column(db.Float, default=0.0)
     # All extra stats from the Leetify API stored as JSON for extensibility
     raw_stats = db.Column(db.JSON, nullable=True)
+    # Win/loss result for this game (True=win, False=loss, None=unknown)
+    won = db.Column(db.Boolean, nullable=True)
 
     player = db.relationship("Player", back_populates="games")
     game = db.relationship("Game", back_populates="player_games")
@@ -113,6 +115,7 @@ class PlayerGame(db.Model):
         }
         if self.raw_stats:
             d["raw_stats"] = self.raw_stats
+        d["won"] = self.won
         return d
 
 

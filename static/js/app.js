@@ -42,12 +42,20 @@ function statsTable(players, extraCols = []) {
     const avatar = p.avatar_url
       ? `<img class="avatar" src="${p.avatar_url}" alt="" onerror="this.style.display='none'">`
       : `<span class="avatar" style="background:#30363d;display:inline-block;"></span>`;
+    const wl = (p.wins !== undefined)
+      ? `<span style="color:var(--green)">${p.wins}W</span>-<span style="color:var(--red)">${p.losses}L</span>`
+      : `—`;
+    const wr = (p.wins !== undefined && (p.wins + p.losses) > 0)
+      ? `${p.win_rate.toFixed(1)}%`
+      : `—`;
     const extraCells = extraCols.map(c => `<td>${c.render(p)}</td>`).join("");
     return `
       <tr>
         <td class="rank">#${i + 1}</td>
         <td><div class="player-cell">${avatar}<span class="username player-link" data-steamid="${p.steam_id}" style="cursor:pointer;text-decoration:underline dotted">${p.username}</span></div></td>
         <td>${p.games}</td>
+        <td>${wl}</td>
+        <td>${wr}</td>
         <td>${fmtRating(p.avg_leetify_rating)}</td>
         <td>${(parseFloat(p.avg_kd) || 0).toFixed(2)}</td>
         <td>${(parseFloat(p.avg_adr) || 0).toFixed(1)}</td>
@@ -63,6 +71,8 @@ function statsTable(players, extraCols = []) {
             <th></th>
             <th>Player</th>
             <th>Games</th>
+            <th>W-L</th>
+            <th>Win%</th>
             <th>Rating</th>
             <th>K/D</th>
             <th>ADR</th>
@@ -99,6 +109,7 @@ function loadTab(name) {
   if (name === "session")      loadCurrentSession();
   if (name === "alltime")      loadAllTime();
   if (name === "records")      loadRecords();
+  if (name === "win-stats")    loadWinStats();
   if (name === "player-stats") loadPlayerStats();
   if (name === "players")      loadPlayers();
   if (name === "problem")      loadProblemPlayers();
@@ -254,14 +265,19 @@ async function renderPlayerStats(steamId) {
     const headerCells = cols.map(c => `<th>${c.label}</th>`).join("");
     const rows = _psGames.map(g => {
       const d = g.game.played_at ? new Date(g.game.played_at).toLocaleDateString() : "—";
+      const result = g.won === true
+        ? `<span class="badge-ok" style="padding:2px 6px">W</span>`
+        : g.won === false
+          ? `<span class="badge-danger" style="padding:2px 6px">L</span>`
+          : `<span style="color:var(--muted)">—</span>`;
       const cells = cols.map(c => `<td>${c.render(g)}</td>`).join("");
-      return `<tr><td>${d}</td><td>${g.game.map_name || "—"}</td>${cells}</tr>`;
+      return `<tr><td>${d}</td><td>${g.game.map_name || "—"}</td><td>${result}</td>${cells}</tr>`;
     }).join("");
 
     wrap.innerHTML = `
       <div style="overflow-x:auto">
         <table class="stats-table">
-          <thead><tr><th>Date</th><th>Map</th>${headerCells}</tr></thead>
+          <thead><tr><th>Date</th><th>Map</th><th>Result</th>${headerCells}</tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
@@ -478,10 +494,16 @@ async function showPlayerDetail(steamId) {
 
     const gameRows = (games || []).map(g => {
       const d = g.game.played_at ? new Date(g.game.played_at).toLocaleDateString() : "—";
+      const result = g.won === true
+        ? `<span class="badge-ok" style="padding:2px 6px">W</span>`
+        : g.won === false
+          ? `<span class="badge-danger" style="padding:2px 6px">L</span>`
+          : `<span style="color:var(--muted)">—</span>`;
       return `
         <tr>
           <td>${d}</td>
           <td>${g.game.map_name || "—"}</td>
+          <td>${result}</td>
           <td>${g.kills}</td>
           <td>${g.deaths}</td>
           <td>${g.assists}</td>
@@ -512,7 +534,7 @@ async function showPlayerDetail(steamId) {
         <div style="overflow-x:auto">
           <table class="stats-table">
             <thead><tr>
-              <th>Date</th><th>Map</th><th>K</th><th>D</th><th>A</th>
+              <th>Date</th><th>Map</th><th>Result</th><th>K</th><th>D</th><th>A</th>
               <th>Rating</th><th>ADR</th><th>HS%</th>
             </tr></thead>
             <tbody>${gameRows}</tbody>
@@ -664,6 +686,156 @@ document.getElementById("btn-analyse").addEventListener("click", async () => {
   } finally {
     btn.disabled = false;
     btn.textContent = "Generate Analysis";
+  }
+});
+
+// ------------------------------------------------------------------ //
+// Win Stats Tab                                                        //
+// ------------------------------------------------------------------ //
+
+async function loadWinStats() {
+  try {
+    const players = await api("GET", "/api/stats/monthly");
+    const summaryEl = document.getElementById("win-stats-summary");
+    const tableWrap = document.getElementById("win-stats-table-wrap");
+
+    const active = players.filter(p => p.games > 0);
+    const totalWins  = active.reduce((s, p) => s + (p.wins  || 0), 0);
+    const totalLoss  = active.reduce((s, p) => s + (p.losses || 0), 0);
+    const totalGames = totalWins + totalLoss;
+    const topWinner  = active.slice().sort((a, b) => (b.wins || 0) - (a.wins || 0))[0];
+    const topWinRate = active.filter(p => (p.wins || 0) + (p.losses || 0) > 0)
+                             .sort((a, b) => b.win_rate - a.win_rate)[0];
+
+    summaryEl.innerHTML = `
+      <div class="summary-card">
+        <div class="summary-label">Total Wins (group)</div>
+        <div class="summary-value" style="color:var(--green)">${totalWins}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Total Losses (group)</div>
+        <div class="summary-value" style="color:var(--red)">${totalLoss}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Group Win Rate</div>
+        <div class="summary-value">${totalGames > 0 ? ((totalWins / totalGames) * 100).toFixed(1) + "%" : "—"}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Most Wins</div>
+        <div class="summary-value">${topWinner ? topWinner.username : "—"}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Best Win Rate</div>
+        <div class="summary-value">${topWinRate ? topWinRate.username + " (" + topWinRate.win_rate.toFixed(1) + "%)" : "—"}</div>
+      </div>`;
+
+    // Sort by win rate descending, then by wins
+    const sorted = active.slice().sort((a, b) => {
+      const aGames = (a.wins || 0) + (a.losses || 0);
+      const bGames = (b.wins || 0) + (b.losses || 0);
+      if (bGames === 0 && aGames === 0) return 0;
+      if (bGames === 0) return -1;
+      if (aGames === 0) return 1;
+      return b.win_rate - a.win_rate;
+    });
+
+    if (!sorted.length) {
+      tableWrap.innerHTML = `<p class="empty-msg">No data yet. Add players and sync.</p>`;
+    } else {
+      const rows = sorted.map((p, i) => {
+        const avatar = p.avatar_url
+          ? `<img class="avatar" src="${p.avatar_url}" alt="" onerror="this.style.display='none'">`
+          : `<span class="avatar" style="background:#30363d;display:inline-block;"></span>`;
+        const gwr = (p.wins || 0) + (p.losses || 0);
+        const wrBar = gwr > 0
+          ? `<div style="display:inline-block;width:80px;height:8px;background:var(--border);border-radius:4px;vertical-align:middle;margin-left:8px"><div style="width:${p.win_rate}%;height:100%;background:var(--green);border-radius:4px"></div></div>`
+          : "";
+        return `
+          <tr>
+            <td class="rank">#${i + 1}</td>
+            <td><div class="player-cell">${avatar}<span class="username player-link" data-steamid="${p.steam_id}" style="cursor:pointer;text-decoration:underline dotted">${p.username}</span></div></td>
+            <td>${p.games}</td>
+            <td style="color:var(--green);font-weight:600">${p.wins || 0}</td>
+            <td style="color:var(--red);font-weight:600">${p.losses || 0}</td>
+            <td>${gwr > 0 ? p.win_rate.toFixed(1) + "%" + wrBar : "—"}</td>
+            <td>${fmtRating(p.avg_leetify_rating)}</td>
+            <td>${(parseFloat(p.avg_kd) || 0).toFixed(2)}</td>
+          </tr>`;
+      }).join("");
+      tableWrap.innerHTML = `
+        <div style="overflow-x:auto">
+          <table class="stats-table">
+            <thead><tr>
+              <th></th><th>Player</th><th>Games</th>
+              <th>Wins</th><th>Losses</th><th>Win Rate</th>
+              <th>Rating</th><th>K/D</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    }
+
+    // Populate player selector for match history
+    const sel = document.getElementById("win-stats-player-select");
+    sel.innerHTML = `<option value="">— Select a player —</option>` +
+      players.map(p => `<option value="${p.steam_id}">${p.username}</option>`).join("");
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+document.getElementById("win-stats-player-select").addEventListener("change", async function () {
+  const steamId = this.value;
+  const wrap = document.getElementById("win-stats-match-wrap");
+  if (!steamId) {
+    wrap.innerHTML = `<p class="empty-msg">Select a player to view their match history.</p>`;
+    return;
+  }
+  wrap.innerHTML = `<p class="muted" style="text-align:center;padding:20px">Loading…</p>`;
+  try {
+    const data = await api("GET", `/api/stats/${steamId}`);
+    const games = data.games || [];
+    if (!games.length) {
+      wrap.innerHTML = `<p class="empty-msg">No game history yet.</p>`;
+      return;
+    }
+    const rows = games.map(g => {
+      const d = g.game.played_at ? new Date(g.game.played_at).toLocaleDateString() : "—";
+      const result = g.won === true
+        ? `<span class="badge-ok" style="padding:2px 8px">WIN</span>`
+        : g.won === false
+          ? `<span class="badge-danger" style="padding:2px 8px">LOSS</span>`
+          : `<span style="color:var(--muted)">—</span>`;
+      const score = g.game.score_ct !== undefined
+        ? `${g.game.score_ct} – ${g.game.score_t}`
+        : "—";
+      return `
+        <tr>
+          <td>${d}</td>
+          <td>${g.game.map_name || "—"}</td>
+          <td>${result}</td>
+          <td>${score}</td>
+          <td>${g.kills}</td>
+          <td>${g.deaths}</td>
+          <td>${g.assists}</td>
+          <td>${fmtRating(g.leetify_rating)}</td>
+          <td>${(parseFloat(g.adr) || 0).toFixed(1)}</td>
+          <td>${(parseFloat(g.headshot_pct) || 0).toFixed(1)}%</td>
+        </tr>`;
+    }).join("");
+    wrap.innerHTML = `
+      <div style="overflow-x:auto">
+        <table class="stats-table">
+          <thead><tr>
+            <th>Date</th><th>Map</th><th>Result</th><th>Score</th>
+            <th>K</th><th>D</th><th>A</th><th>Rating</th><th>ADR</th><th>HS%</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  } catch (e) {
+    wrap.innerHTML = `<p class="empty-msg">Could not load match history.</p>`;
+    toast(e.message, "error");
   }
 });
 
