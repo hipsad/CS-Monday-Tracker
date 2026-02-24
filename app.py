@@ -28,6 +28,9 @@ def create_app(config_class=Config):
             if "raw_stats" not in cols:
                 conn.execute(db.text("ALTER TABLE player_game ADD COLUMN raw_stats JSON"))
                 conn.commit()
+            if "won" not in cols:
+                conn.execute(db.text("ALTER TABLE player_game ADD COLUMN won BOOLEAN"))
+                conn.commit()
 
     with app.app_context():
         # Import models so SQLAlchemy registers them before create_all
@@ -39,7 +42,7 @@ def create_app(config_class=Config):
     # Frontend routes                                                       #
     # ------------------------------------------------------------------ #
 
-    @app.route("/")
+    @app.route("/", methods=["GET", "POST"])
     def index():
         return render_template("dashboard.html")
 
@@ -252,7 +255,7 @@ def create_app(config_class=Config):
                 # Build a lookup from steam_id → stats for all players in the game
                 stats_by_steam_id = {s["steam_id"]: s for s in all_player_stats if s.get("steam_id")}
 
-                def _upsert_player_game(p, ps):
+                def _upsert_player_game(p, ps, won=None):
                     pg = PlayerGame.query.filter_by(player_id=p.id, game_id=game.id).first()
                     if not pg:
                         pg = PlayerGame(player_id=p.id, game_id=game.id)
@@ -270,17 +273,28 @@ def create_app(config_class=Config):
                     pg.opening_deaths = ps["opening_deaths"]
                     pg.utility_damage = ps["utility_damage"]
                     pg.raw_stats = ps.get("raw_stats")
+                    if won is not None:
+                        pg.won = won
 
                 # Save stats for the current player.
                 # Prefer own_stats from the profile match entry (contains ADR,
                 # HS%, and correct assists) over the game-details response
                 # which may omit those fields in the public API.
+                # Determine win/loss from the score in this player's profile entry.
+                # The Leetify API returns score as [own_team_score, enemy_team_score];
+                # parse_games() stores this as score_ct=own_team, score_t=enemy_team.
+                score_own = g_data.get("score_ct", 0)
+                score_enemy = g_data.get("score_t", 0)
+                won = None
+                if score_own + score_enemy > 0:
+                    won = score_own > score_enemy
+
                 own_stats = g_data.get("own_stats")
                 player_stats = stats_by_steam_id.get(player.steam_id)
                 if own_stats is not None:
-                    _upsert_player_game(player, own_stats)
+                    _upsert_player_game(player, own_stats, won=won)
                 elif player_stats is not None:
-                    _upsert_player_game(player, player_stats)
+                    _upsert_player_game(player, player_stats, won=won)
                 else:
                     # Player not found in this game – skip but still check friends
                     pass
@@ -338,6 +352,8 @@ def create_app(config_class=Config):
                     "avg_adr": 0.0,
                     "avg_hs_pct": 0.0,
                     "avg_leetify_rating": 0.0,
+                    "wins": 0,
+                    "losses": 0,
                     "win_rate": 0.0,
                     "total_kills": 0,
                     "total_deaths": 0,
@@ -349,6 +365,9 @@ def create_app(config_class=Config):
             total_deaths = sum(pg.deaths for pg in pgs)
             rated = [pg for pg in pgs if pg.leetify_rating != 0]
             adr_games = [pg for pg in pgs if pg.adr > 0]
+            wins = sum(1 for pg in pgs if pg.won is True)
+            losses = sum(1 for pg in pgs if pg.won is False)
+            games_with_result = wins + losses
             result.append({
                 "steam_id": player.steam_id,
                 "username": player.username,
@@ -359,7 +378,9 @@ def create_app(config_class=Config):
                 "avg_kd": round(total_kills / max(total_deaths, 1), 2),
                 "avg_adr": round(sum(pg.adr for pg in adr_games) / len(adr_games), 1) if adr_games else 0.0,
                 "avg_hs_pct": round(sum(pg.headshot_pct for pg in pgs) / n, 1),
-                "win_rate": 0.0,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": round(wins / games_with_result * 100, 1) if games_with_result > 0 else 0.0,
                 "total_kills": total_kills,
                 "total_deaths": total_deaths,
                 "total_assists": sum(pg.assists for pg in pgs),
@@ -604,6 +625,8 @@ def create_app(config_class=Config):
                 "avg_adr": 0.0,
                 "avg_hs_pct": 0.0,
                 "avg_leetify_rating": 0.0,
+                "wins": 0,
+                "losses": 0,
                 "win_rate": 0.0,
                 "total_kills": 0,
                 "total_deaths": 0,
@@ -619,6 +642,11 @@ def create_app(config_class=Config):
         rated = [pg for pg in pgs if pg.leetify_rating != 0]
         adr_games = [pg for pg in pgs if pg.adr > 0]
 
+        # Win/loss tracking (only games where result is known)
+        wins = sum(1 for pg in pgs if pg.won is True)
+        losses = sum(1 for pg in pgs if pg.won is False)
+        games_with_result = wins + losses
+
         return {
             "steam_id": player.steam_id,
             "username": player.username,
@@ -631,7 +659,9 @@ def create_app(config_class=Config):
             "avg_hs_pct": round(
                 sum(pg.headshot_pct for pg in pgs) / n, 1
             ),
-            "win_rate": 0.0,  # win/loss requires knowing which team the player was on
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / games_with_result * 100, 1) if games_with_result > 0 else 0.0,
             "total_kills": total_kills,
             "total_deaths": total_deaths,
             "total_assists": total_assists,
@@ -666,6 +696,10 @@ def create_app(config_class=Config):
             rated = [pg for pg in pgs if pg.leetify_rating != 0]
             adr_games = [pg for pg in pgs if pg.adr > 0]
 
+            wins = sum(1 for pg in pgs if pg.won is True)
+            losses = sum(1 for pg in pgs if pg.won is False)
+            games_with_result = wins + losses
+
             result.append({
                 "steam_id": player.steam_id,
                 "username": player.username,
@@ -676,7 +710,9 @@ def create_app(config_class=Config):
                 "avg_kd": round(total_kills / max(total_deaths, 1), 2),
                 "avg_adr": round(sum(pg.adr for pg in adr_games) / len(adr_games), 1) if adr_games else 0.0,
                 "avg_hs_pct": round(sum(pg.headshot_pct for pg in pgs) / n, 1),
-                "win_rate": 0.0,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": round(wins / games_with_result * 100, 1) if games_with_result > 0 else 0.0,
                 "total_kills": total_kills,
                 "total_deaths": total_deaths,
                 "total_assists": sum(pg.assists for pg in pgs),
