@@ -91,9 +91,11 @@ def parse_games(profile: dict) -> list[dict]:
     """Extract and normalise the list of games from a Leetify profile.
 
     Returns a list of dicts each containing:
-      match_id, played_at, map_name, score_ct, score_t.
-    Player stats are NOT included here – call get_game_details() and
-    parse_game_player_stats() separately for each match.
+      match_id, played_at, map_name, score_ct, score_t, own_stats.
+    own_stats is a dict of the queried player's own per-match stats when the
+    profile endpoint embeds them (ADR, HS%, rating, etc.), or None otherwise.
+    Call get_game_details() and parse_game_player_stats() separately to obtain
+    stats for all other players in each match.
 
     Supports both:
       * New public API: 'recent_matches' with snake_case fields
@@ -135,9 +137,109 @@ def parse_games(profile: dict) -> list[dict]:
                 "map_name": g.get("map_name") or g.get("mapName") or "",
                 "score_ct": scores[0] if len(scores) > 0 else 0,
                 "score_t": scores[1] if len(scores) > 1 else 0,
+                # Per-player stats embedded by the profile endpoint for the
+                # queried player.  None when not present (e.g. legacy games
+                # list or a bare match-history entry with no stat fields).
+                "own_stats": _extract_own_stats_from_match_entry(g),
             }
         )
     return parsed
+
+
+def _extract_own_stats_from_match_entry(g: dict) -> dict | None:
+    """Extract the queried player's own stats from a profile match-list entry.
+
+    The /v3/profile and /v3/profile/matches endpoints embed per-player stats
+    directly in each match entry for the queried player.  Field names follow
+    the new public API convention (snake_case), with HS% expressed as a
+    percentage value (0–100) and leetify_rating as a small fraction that is
+    scaled ×100 to match Leetify's display range.
+
+    Returns None when no per-player stats are present (e.g. the entry only
+    contains match metadata without any kill/death fields) or when the entry
+    contains unexpected data that cannot be parsed.
+    """
+    try:
+        return _extract_own_stats_from_match_entry_unsafe(g)
+    except (TypeError, ValueError, AttributeError) as exc:
+        logger.warning("Could not extract own stats from match entry: %s", exc)
+        return None
+
+
+def _extract_own_stats_from_match_entry_unsafe(g: dict) -> dict | None:
+    """Internal implementation – may raise on malformed data."""
+    # 'kills' or 'total_kills' acts as a signal that stats are embedded.
+    kills_raw = g.get("kills") if g.get("kills") is not None else g.get("total_kills")
+    if kills_raw is None:
+        return None
+
+    kills = int(kills_raw)
+    deaths_raw = g.get("deaths") if g.get("deaths") is not None else g.get("total_deaths")
+    deaths = int(deaths_raw) if deaths_raw is not None else 0
+    assists_raw = g.get("assists") if g.get("assists") is not None else g.get("total_assists")
+    assists = int(assists_raw) if assists_raw is not None else 0
+
+    # ADR: pre-computed 'dpr' or 'adr' (both represent damage per round)
+    adr_raw = g.get("dpr") if g.get("dpr") is not None else g.get("adr")
+    adr = round(float(adr_raw), 1) if adr_raw is not None else 0.0
+
+    # Headshots: percentage-based field ('hs_percent' / 'hsp') or kill count
+    hs_pct = g.get("hs_percent") if g.get("hs_percent") is not None else g.get("hsp")
+    if hs_pct is not None:
+        # Convert percentage to headshot kill count; 0 kills → 0 headshots.
+        headshots = round(float(hs_pct) / 100 * kills) if kills > 0 else 0
+    else:
+        hs_raw = (
+            g.get("total_hs_kills")
+            if g.get("total_hs_kills") is not None
+            else g.get("hs_kills")
+        )
+        headshots = int(hs_raw) if hs_raw is not None else 0
+
+    # Ratings: new API returns fractions (e.g. -0.0196) → scale ×100 to get
+    # Leetify's display value (e.g. -1.96).  Legacy camelCase fields are
+    # already in the correct range and are used as-is.
+    lr_new = g.get("leetify_rating")
+    lr_legacy = g.get("leetifyRating")
+    if lr_new is not None:
+        leetify_rating = round(float(lr_new) * 100, 2)
+    elif lr_legacy is not None:
+        leetify_rating = float(lr_legacy)
+    else:
+        leetify_rating = 0.0
+
+    ct_lr_new = g.get("ct_leetify_rating")
+    ct_lr_legacy = g.get("ctLeetifyRating")
+    ct_rating = (
+        round(float(ct_lr_new) * 100, 2) if ct_lr_new is not None
+        else float(ct_lr_legacy or 0)
+    )
+
+    t_lr_new = g.get("t_leetify_rating")
+    t_lr_legacy = g.get("tLeetifyRating")
+    t_rating = (
+        round(float(t_lr_new) * 100, 2) if t_lr_new is not None
+        else float(t_lr_legacy or 0)
+    )
+
+    # HLTV-style rating: use personalPerformanceRating when available
+    # (legacy only); otherwise fall back to the scaled leetify_rating.
+    rating = float(g.get("personalPerformanceRating") or leetify_rating or 0)
+
+    return {
+        "kills": kills,
+        "deaths": deaths,
+        "assists": assists,
+        "headshots": headshots,
+        "adr": adr,
+        "rating": rating,
+        "leetify_rating": leetify_rating,
+        "ct_rating": ct_rating,
+        "t_rating": t_rating,
+        "opening_kills": int(g.get("openingKills") or 0),
+        "opening_deaths": int(g.get("openingDeaths") or 0),
+        "utility_damage": float(g.get("utilityDamage") or 0),
+    }
 
 
 def parse_game_player_stats(game_details: dict) -> list[dict]:
@@ -205,14 +307,22 @@ def _parse_player_game_stats(raw: dict, total_rounds: int = 0) -> dict:
     assists   = int(_field("total_assists", "totalAssists", 0))
 
     # ---- Headshot kills ----
-    # New API: total_hs_kills (headshot kills count, the right metric for HS%)
+    # New API: total_hs_kills (headshot kills count) or hs_percent (percentage)
     # Legacy API: shotsHitFoeHead (shots that hit enemy head – used as proxy)
-    headshots = int(_field("total_hs_kills", "shotsHitFoeHead", 0))
+    hs_pct_val = (
+        raw.get("hs_percent") if raw.get("hs_percent") is not None
+        else raw.get("hsp")
+    )
+    if hs_pct_val is not None:
+        # Convert percentage to headshot kill count; 0 kills → 0 headshots.
+        headshots = round(float(hs_pct_val) / 100 * kills) if kills > 0 else 0
+    else:
+        headshots = int(_field("total_hs_kills", "shotsHitFoeHead", 0))
 
     # ---- ADR ----
-    # New API provides dpr (damage per round) pre-computed – use it directly.
+    # New API provides dpr or adr (damage per round) pre-computed – use directly.
     # Legacy API requires computing from totalDamage / total_rounds.
-    dpr_val = raw.get("dpr")
+    dpr_val = raw.get("dpr") if raw.get("dpr") is not None else raw.get("adr")
     if dpr_val is not None:
         adr = round(float(dpr_val), 1)
     else:
@@ -231,15 +341,37 @@ def _parse_player_game_stats(raw: dict, total_rounds: int = 0) -> dict:
         adr = round(total_damage / total_rounds, 1) if total_rounds else 0.0
 
     # ---- Ratings ----
-    # New API: leetify_rating per match (snake_case)
-    # Legacy API: leetifyRating, personalPerformanceRating (camelCase)
-    leetify_rating = float(_field("leetify_rating", "leetifyRating", 0))
+    # New API: leetify_rating per match (snake_case) returned as a small
+    # fraction (e.g. -0.0196).  Multiply by 100 to get the display value
+    # shown on Leetify (e.g. -1.96).
+    # Legacy API: leetifyRating is already in the correct display range.
+    lr_new = raw.get("leetify_rating")
+    lr_legacy = raw.get("leetifyRating")
+    if lr_new is not None:
+        leetify_rating = round(float(lr_new) * 100, 2)
+    elif lr_legacy is not None:
+        leetify_rating = float(lr_legacy)
+    else:
+        leetify_rating = 0.0
+
+    ct_lr_new = raw.get("ct_leetify_rating")
+    ct_lr_legacy = raw.get("ctLeetifyRating")
+    ct_rating = (
+        round(float(ct_lr_new) * 100, 2) if ct_lr_new is not None
+        else float(ct_lr_legacy or 0)
+    )
+
+    t_lr_new = raw.get("t_leetify_rating")
+    t_lr_legacy = raw.get("tLeetifyRating")
+    t_rating = (
+        round(float(t_lr_new) * 100, 2) if t_lr_new is not None
+        else float(t_lr_legacy or 0)
+    )
+
     # personalPerformanceRating was the HLTV-style metric in the old API.
     # The new public API does not expose a separate HLTV 2.0 value, so we
-    # fall back to leetify_rating as the best available performance proxy.
-    rating     = float(raw.get("personalPerformanceRating") or leetify_rating or 0)
-    ct_rating  = float(_field("ct_leetify_rating", "ctLeetifyRating", 0))
-    t_rating   = float(_field("t_leetify_rating",  "tLeetifyRating",  0))
+    # fall back to leetify_rating (already scaled) as the best available proxy.
+    rating = float(raw.get("personalPerformanceRating") or leetify_rating or 0)
 
     # ---- Fields absent from the new public API ----
     opening_kills  = raw.get("openingKills",  0) or 0
