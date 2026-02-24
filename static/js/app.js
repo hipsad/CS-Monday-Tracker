@@ -106,7 +106,7 @@ function loadTab(name) {
 }
 
 // ------------------------------------------------------------------ //
-// Home Tab – Last 30 Days                                             //
+// Home Tab – Last 15 Games                                             //
 // ------------------------------------------------------------------ //
 
 async function loadHome() {
@@ -133,7 +133,7 @@ async function loadHome() {
         <div class="summary-value">${topPlayer ? topPlayer.username : "—"}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Total Kills (30 games)</div>
+        <div class="summary-label">Total Kills (15 games)</div>
         <div class="summary-value">${totalKills}</div>
       </div>
       <div class="summary-card">

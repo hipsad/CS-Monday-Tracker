@@ -255,6 +255,7 @@ def create_app(config_class=Config):
                     pg.opening_kills = ps["opening_kills"]
                     pg.opening_deaths = ps["opening_deaths"]
                     pg.utility_damage = ps["utility_damage"]
+                    pg.raw_stats = ps.get("raw_stats")
 
                 # Save stats for the current player.
                 # Prefer own_stats from the profile match entry (contains ADR,
@@ -299,7 +300,7 @@ def create_app(config_class=Config):
 
     @app.route("/api/stats/monthly", methods=["GET"])
     def monthly_stats():
-        """Aggregate stats for all players over their last 30 games."""
+        """Aggregate stats for all players over their last 15 games."""
         from models import Player, PlayerGame, Game
         players = Player.query.all()
         result = []
@@ -309,7 +310,7 @@ def create_app(config_class=Config):
                 .join(PlayerGame.game)
                 .filter(PlayerGame.player_id == player.id)
                 .order_by(Game.played_at.desc())
-                .limit(30)
+                .limit(15)
                 .all()
             )
             if not pgs:
@@ -355,15 +356,22 @@ def create_app(config_class=Config):
     @app.route("/api/stats/<steam_id>", methods=["GET"])
     def player_stats(steam_id):
         """Detailed stats for a single player including per-game breakdown."""
-        from models import Player, PlayerGame
+        from models import Player, PlayerGame, Game
         player = Player.query.filter_by(steam_id=steam_id).first_or_404()
         agg = _aggregate_player_stats(player)
+        pgs = (
+            PlayerGame.query
+            .join(PlayerGame.game)
+            .filter(PlayerGame.player_id == player.id)
+            .order_by(Game.played_at.desc())
+            .limit(15)
+            .all()
+        )
         games = []
-        for pg in player.games:
+        for pg in pgs:
             entry = pg.to_dict()
             entry["game"] = pg.game.to_dict()
             games.append(entry)
-        games.sort(key=lambda x: x["game"]["played_at"] or "", reverse=True)
         return jsonify({"player": player.to_dict(), "stats": agg, "games": games})
 
     @app.route("/api/stats/records", methods=["GET"])
@@ -519,11 +527,18 @@ def create_app(config_class=Config):
             return jsonify({"error": "No stats available. Sync data first."}), 400
 
         # Attach per-game breakdown for richer analysis (only available for non-session scope)
-        from models import PlayerGame
+        from models import PlayerGame, Game as GameModel
         per_game_data = {}
         if scope != "session" or not scope_id:
             for p in players:
-                pgs = PlayerGame.query.filter_by(player_id=p.id).order_by(PlayerGame.game_id.desc()).limit(30).all()
+                pgs = (
+                    PlayerGame.query
+                    .join(PlayerGame.game)
+                    .filter(PlayerGame.player_id == p.id)
+                    .order_by(GameModel.played_at.desc())
+                    .limit(15)
+                    .all()
+                )
                 per_game_data[p.steam_id] = [pg.to_dict() for pg in pgs]
 
         analysis_text = openai_client.generate_analysis(
@@ -550,13 +565,20 @@ def create_app(config_class=Config):
     # ------------------------------------------------------------------ #
 
     def _aggregate_player_stats(player) -> dict:
-        """Return a dict of aggregate stats for a player across all their games.
+        """Return a dict of aggregate stats for a player across their last 15 games.
 
         Games with zero ADR or zero rating are excluded from the respective
         averages to avoid old/incomplete game records skewing the numbers.
         """
-        from models import PlayerGame
-        pgs = PlayerGame.query.filter_by(player_id=player.id).all()
+        from models import PlayerGame, Game
+        pgs = (
+            PlayerGame.query
+            .join(PlayerGame.game)
+            .filter(PlayerGame.player_id == player.id)
+            .order_by(Game.played_at.desc())
+            .limit(15)
+            .all()
+        )
         if not pgs:
             return {
                 "steam_id": player.steam_id,
