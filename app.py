@@ -16,10 +16,24 @@ def create_app(config_class=Config):
     CORS(app)
     db.init_app(app)
 
+    def _migrate_db():
+        """Apply incremental DDL migrations to an existing database."""
+        with db.engine.connect() as conn:
+            # PRAGMA table_info returns rows: (cid, name, type, notnull, dflt_value, pk)
+            rows = conn.execute(db.text("PRAGMA table_info(player_game)")).fetchall()
+            if not rows:
+                # Table doesn't exist yet; create_all will create it with all columns.
+                return
+            cols = [row[1] for row in rows]  # index 1 is the column name
+            if "raw_stats" not in cols:
+                conn.execute(db.text("ALTER TABLE player_game ADD COLUMN raw_stats JSON"))
+                conn.commit()
+
     with app.app_context():
         # Import models so SQLAlchemy registers them before create_all
         from models import Player, Game, PlayerGame, Session, AIAnalysis  # noqa: F401
         db.create_all()
+        _migrate_db()
 
     # ------------------------------------------------------------------ #
     # Frontend routes                                                       #
