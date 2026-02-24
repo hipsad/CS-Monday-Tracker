@@ -48,7 +48,6 @@ function statsTable(players, extraCols = []) {
         <td class="rank">#${i + 1}</td>
         <td><div class="player-cell">${avatar}<span class="username player-link" data-steamid="${p.steam_id}" style="cursor:pointer;text-decoration:underline dotted">${p.username}</span></div></td>
         <td>${p.games}</td>
-        <td>${fmtRating(p.avg_rating)}</td>
         <td>${fmtRating(p.avg_leetify_rating)}</td>
         <td>${(parseFloat(p.avg_kd) || 0).toFixed(2)}</td>
         <td>${(parseFloat(p.avg_adr) || 0).toFixed(1)}</td>
@@ -64,8 +63,7 @@ function statsTable(players, extraCols = []) {
             <th></th>
             <th>Player</th>
             <th>Games</th>
-            <th>HLTV Rating</th>
-            <th>Leetify Rating</th>
+            <th>Rating</th>
             <th>K/D</th>
             <th>ADR</th>
             <th>HS%</th>
@@ -97,13 +95,14 @@ document.querySelectorAll(".nav-btn").forEach(btn => {
 });
 
 function loadTab(name) {
-  if (name === "home")     loadHome();
-  if (name === "session")  loadCurrentSession();
-  if (name === "alltime")  loadAllTime();
-  if (name === "records")  loadRecords();
-  if (name === "players")  loadPlayers();
-  if (name === "problem")  loadProblemPlayers();
-  if (name === "ai")       loadAnalyses();
+  if (name === "home")         loadHome();
+  if (name === "session")      loadCurrentSession();
+  if (name === "alltime")      loadAllTime();
+  if (name === "records")      loadRecords();
+  if (name === "player-stats") loadPlayerStats();
+  if (name === "players")      loadPlayers();
+  if (name === "problem")      loadProblemPlayers();
+  if (name === "ai")           loadAnalyses();
 }
 
 // ------------------------------------------------------------------ //
@@ -121,7 +120,7 @@ async function loadHome() {
     const topPlayer  = active.length ? active[0] : null;
     const totalKills = active.reduce((s, p) => s + p.total_kills, 0);
     const avgRating  = active.length
-      ? (active.reduce((s, p) => s + p.avg_rating, 0) / active.length).toFixed(2)
+      ? (active.reduce((s, p) => s + p.avg_leetify_rating, 0) / active.length).toFixed(2)
       : "—";
 
     summaryEl.innerHTML = `
@@ -134,11 +133,11 @@ async function loadHome() {
         <div class="summary-value">${topPlayer ? topPlayer.username : "—"}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Total Kills (30d)</div>
+        <div class="summary-label">Total Kills (30 games)</div>
         <div class="summary-value">${totalKills}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Avg HLTV Rating</div>
+        <div class="summary-label">Avg Leetify Rating</div>
         <div class="summary-value">${avgRating}</div>
       </div>`;
 
@@ -187,6 +186,107 @@ async function loadAllTime() {
   } catch (e) {
     toast(e.message, "error");
   }
+}
+
+// ------------------------------------------------------------------ //
+// Player Stats Tab (filterable per-player view)                       //
+// ------------------------------------------------------------------ //
+
+let _psCurrentSteamId = null;
+let _psGames = [];
+
+async function loadPlayerStats() {
+  try {
+    const players = await api("GET", "/api/players");
+    const sel = document.getElementById("ps-player-select");
+    sel.innerHTML = `<option value="">— Select a player —</option>` +
+      players.map(p => `<option value="${p.steam_id}">${p.username}</option>`).join("");
+
+    // Restore last selection
+    if (_psCurrentSteamId) {
+      sel.value = _psCurrentSteamId;
+      renderPlayerStats(_psCurrentSteamId);
+    }
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+document.getElementById("ps-player-select").addEventListener("change", async function () {
+  _psCurrentSteamId = this.value || null;
+  if (_psCurrentSteamId) await renderPlayerStats(_psCurrentSteamId);
+  else {
+    document.getElementById("ps-summary").innerHTML = "";
+    document.getElementById("ps-table-wrap").innerHTML = `<p class="empty-msg">Select a player to view their stats.</p>`;
+  }
+});
+
+document.querySelectorAll(".ps-stat-toggle").forEach(cb => {
+  cb.addEventListener("change", () => { if (_psCurrentSteamId) renderPlayerStats(_psCurrentSteamId); });
+});
+
+async function renderPlayerStats(steamId) {
+  const wrap = document.getElementById("ps-table-wrap");
+  const summaryEl = document.getElementById("ps-summary");
+  wrap.innerHTML = `<p class="muted" style="text-align:center;padding:20px">Loading…</p>`;
+  try {
+    const data = await api("GET", `/api/stats/${steamId}`);
+    const p = data.player;
+    const s = data.stats;
+    _psGames = data.games || [];
+
+    summaryEl.innerHTML = `
+      <div class="summary-card"><div class="summary-label">Games</div><div class="summary-value">${s.games}</div></div>
+      <div class="summary-card"><div class="summary-label">Rating</div><div class="summary-value">${(s.avg_leetify_rating||0).toFixed(2)}</div></div>
+      <div class="summary-card"><div class="summary-label">K/D</div><div class="summary-value">${(s.avg_kd||0).toFixed(2)}</div></div>
+      <div class="summary-card"><div class="summary-label">ADR</div><div class="summary-value">${(s.avg_adr||0).toFixed(1)}</div></div>
+      <div class="summary-card"><div class="summary-label">HS%</div><div class="summary-value">${(s.avg_hs_pct||0).toFixed(1)}%</div></div>
+      <div class="summary-card"><div class="summary-label">Kills</div><div class="summary-value">${s.total_kills}</div></div>
+      <div class="summary-card"><div class="summary-label">Deaths</div><div class="summary-value">${s.total_deaths}</div></div>
+      <div class="summary-card"><div class="summary-label">Assists</div><div class="summary-value">${s.total_assists}</div></div>`;
+
+    const cols = getActiveStatCols();
+    if (!_psGames.length) {
+      wrap.innerHTML = `<p class="empty-msg">No game history yet.</p>`;
+      return;
+    }
+
+    const headerCells = cols.map(c => `<th>${c.label}</th>`).join("");
+    const rows = _psGames.map(g => {
+      const d = g.game.played_at ? new Date(g.game.played_at).toLocaleDateString() : "—";
+      const cells = cols.map(c => `<td>${c.render(g)}</td>`).join("");
+      return `<tr><td>${d}</td><td>${g.game.map_name || "—"}</td>${cells}</tr>`;
+    }).join("");
+
+    wrap.innerHTML = `
+      <div style="overflow-x:auto">
+        <table class="stats-table">
+          <thead><tr><th>Date</th><th>Map</th>${headerCells}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  } catch (e) {
+    wrap.innerHTML = `<p class="empty-msg">Could not load stats.</p>`;
+    toast(e.message, "error");
+  }
+}
+
+function getActiveStatCols() {
+  const all = [
+    { col: "rating",   label: "Rating",      render: g => fmtRating(g.leetify_rating) },
+    { col: "kd",       label: "K/D",         render: g => (parseFloat(g.kd_ratio)||0).toFixed(2) },
+    { col: "adr",      label: "ADR",         render: g => (parseFloat(g.adr)||0).toFixed(1) },
+    { col: "hs",       label: "HS%",         render: g => `${(parseFloat(g.headshot_pct)||0).toFixed(1)}%` },
+    { col: "kills",    label: "Kills",       render: g => g.kills },
+    { col: "deaths",   label: "Deaths",      render: g => g.deaths },
+    { col: "assists",  label: "Assists",     render: g => g.assists },
+    { col: "utility",  label: "Utility DMG", render: g => (parseFloat(g.utility_damage)||0).toFixed(0) },
+    { col: "opening",  label: "Opening K",   render: g => g.opening_kills },
+  ];
+  const active = new Set(
+    Array.from(document.querySelectorAll(".ps-stat-toggle:checked")).map(cb => cb.dataset.col)
+  );
+  return all.filter(c => active.has(c.col));
 }
 
 // ------------------------------------------------------------------ //
@@ -385,7 +485,6 @@ async function showPlayerDetail(steamId) {
           <td>${g.kills}</td>
           <td>${g.deaths}</td>
           <td>${g.assists}</td>
-          <td>${fmtRating(g.rating)}</td>
           <td>${fmtRating(g.leetify_rating)}</td>
           <td>${(parseFloat(g.adr) || 0).toFixed(1)}</td>
           <td>${(parseFloat(g.headshot_pct) || 0).toFixed(1)}%</td>
@@ -403,7 +502,7 @@ async function showPlayerDetail(steamId) {
         </div>
         <div class="summary-grid" style="margin-bottom:16px">
           <div class="summary-card"><div class="summary-label">Games</div><div class="summary-value">${s.games}</div></div>
-          <div class="summary-card"><div class="summary-label">Avg HLTV</div><div class="summary-value">${(s.avg_rating||0).toFixed(2)}</div></div>
+          <div class="summary-card"><div class="summary-label">Avg Rating</div><div class="summary-value">${(s.avg_leetify_rating||0).toFixed(2)}</div></div>
           <div class="summary-card"><div class="summary-label">Avg ADR</div><div class="summary-value">${(s.avg_adr||0).toFixed(1)}</div></div>
           <div class="summary-card"><div class="summary-label">Avg HS%</div><div class="summary-value">${(s.avg_hs_pct||0).toFixed(1)}%</div></div>
           <div class="summary-card"><div class="summary-label">K/D</div><div class="summary-value">${(s.avg_kd||0).toFixed(2)}</div></div>
@@ -414,7 +513,7 @@ async function showPlayerDetail(steamId) {
           <table class="stats-table">
             <thead><tr>
               <th>Date</th><th>Map</th><th>K</th><th>D</th><th>A</th>
-              <th>HLTV</th><th>Leetify</th><th>ADR</th><th>HS%</th>
+              <th>Rating</th><th>ADR</th><th>HS%</th>
             </tr></thead>
             <tbody>${gameRows}</tbody>
           </table>
@@ -509,6 +608,15 @@ document.getElementById("ns-create").addEventListener("click", async () => {
 // ------------------------------------------------------------------ //
 
 async function loadAnalyses() {
+  // Populate player list for selection
+  try {
+    const players = await api("GET", "/api/players");
+    const sel = document.getElementById("analysis-players");
+    sel.innerHTML = players.map(p =>
+      `<option value="${p.steam_id}">${p.username}</option>`
+    ).join("");
+  } catch {}
+
   try {
     const analyses = await api("GET", "/api/analysis");
     const container = document.getElementById("past-analyses");
@@ -516,13 +624,19 @@ async function loadAnalyses() {
       container.innerHTML = `<p class="empty-msg">No past analyses yet.</p>`;
       return;
     }
-    container.innerHTML = analyses.map(a => `
-      <div class="card analysis-card">
-        <div>${a.analysis || ""}</div>
-        <p class="muted" style="margin-top:12px">
-          ${new Date(a.created_at).toLocaleString()} · ${a.scope} · ${a.model_used}
-        </p>
-      </div>`).join("");
+    container.innerHTML = analyses.map(a => {
+      const div = document.createElement("div");
+      div.className = "card analysis-card";
+      const textDiv = document.createElement("div");
+      textDiv.textContent = a.analysis || "";
+      const meta = document.createElement("p");
+      meta.className = "muted";
+      meta.style.marginTop = "12px";
+      meta.textContent = `${new Date(a.created_at).toLocaleString()} · ${a.scope} · ${a.model_used}`;
+      div.appendChild(textDiv);
+      div.appendChild(meta);
+      return div.outerHTML;
+    }).join("");
   } catch (e) {
     toast(e.message, "error");
   }
@@ -530,14 +644,18 @@ async function loadAnalyses() {
 
 document.getElementById("btn-analyse").addEventListener("click", async () => {
   const scope = document.getElementById("analysis-scope").value;
+  const sel = document.getElementById("analysis-players");
+  const selected = Array.from(sel.selectedOptions).map(o => o.value).slice(0, 5);
   const btn = document.getElementById("btn-analyse");
   btn.disabled = true;
   btn.textContent = "Generating…";
   try {
-    const result = await api("POST", "/api/analysis", { scope });
+    const body = { scope };
+    if (selected.length > 0) body.player_ids = selected;
+    const result = await api("POST", "/api/analysis", body);
     const resDiv = document.getElementById("analysis-result");
     resDiv.classList.remove("hidden");
-    document.getElementById("analysis-text").textContent = result.analysis;
+    document.getElementById("analysis-text").textContent = result.analysis || "";
     document.getElementById("analysis-meta").textContent =
       `Generated ${new Date(result.created_at).toLocaleString()} using ${result.model_used}`;
     loadAnalyses();

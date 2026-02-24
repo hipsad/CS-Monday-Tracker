@@ -299,20 +299,17 @@ def create_app(config_class=Config):
 
     @app.route("/api/stats/monthly", methods=["GET"])
     def monthly_stats():
-        """Aggregate stats for all players over the last 30 days."""
-        from datetime import datetime, timedelta, timezone
+        """Aggregate stats for all players over their last 30 games."""
         from models import Player, PlayerGame, Game
-        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
         players = Player.query.all()
         result = []
         for player in players:
             pgs = (
                 PlayerGame.query
                 .join(PlayerGame.game)
-                .filter(
-                    PlayerGame.player_id == player.id,
-                    Game.played_at >= cutoff,
-                )
+                .filter(PlayerGame.player_id == player.id)
+                .order_by(Game.played_at.desc())
+                .limit(30)
                 .all()
             )
             if not pgs:
@@ -335,15 +332,17 @@ def create_app(config_class=Config):
             n = len(pgs)
             total_kills = sum(pg.kills for pg in pgs)
             total_deaths = sum(pg.deaths for pg in pgs)
+            rated = [pg for pg in pgs if pg.leetify_rating != 0]
+            adr_games = [pg for pg in pgs if pg.adr > 0]
             result.append({
                 "steam_id": player.steam_id,
                 "username": player.username,
                 "avatar_url": player.avatar_url,
                 "games": n,
-                "avg_rating": round(sum(pg.rating for pg in pgs) / n, 3),
-                "avg_leetify_rating": round(sum(pg.leetify_rating for pg in pgs) / n, 3),
+                "avg_rating": round(sum(pg.leetify_rating for pg in rated) / len(rated), 3) if rated else 0.0,
+                "avg_leetify_rating": round(sum(pg.leetify_rating for pg in rated) / len(rated), 3) if rated else 0.0,
                 "avg_kd": round(total_kills / max(total_deaths, 1), 2),
-                "avg_adr": round(sum(pg.adr for pg in pgs) / n, 1),
+                "avg_adr": round(sum(pg.adr for pg in adr_games) / len(adr_games), 1) if adr_games else 0.0,
                 "avg_hs_pct": round(sum(pg.headshot_pct for pg in pgs) / n, 1),
                 "win_rate": 0.0,
                 "total_kills": total_kills,
@@ -369,19 +368,20 @@ def create_app(config_class=Config):
 
     @app.route("/api/stats/records", methods=["GET"])
     def stat_records():
-        """Return all-time single-game record holders for key stats."""
+        """Return single-game record holders from the beginning of the current year."""
+        from datetime import datetime, timezone, date
         from models import PlayerGame, Game
         from sqlalchemy import desc
+        year_start = datetime(date.today().year, 1, 1, tzinfo=timezone.utc)
         records = {}
-        # (result_key, ORM column/property, display label, is_property)
+        # (result_key, ORM column/property, display label)
         # For @property fields (kd_ratio, headshot_pct) we must do a Python sort;
         # for plain columns we let the DB do the ordering.
         column_categories = [
-            ("best_rating",      PlayerGame.rating,          "HLTV Rating"),
+            ("best_rating",      PlayerGame.leetify_rating,  "Best Rating"),
             ("best_adr",         PlayerGame.adr,             "ADR"),
             ("most_kills",       PlayerGame.kills,           "Kills"),
             ("most_assists",     PlayerGame.assists,         "Assists"),
-            ("best_leetify",     PlayerGame.leetify_rating,  "Leetify Rating"),
             ("most_utility_dmg", PlayerGame.utility_damage,  "Utility Damage"),
         ]
         property_categories = [
@@ -393,6 +393,7 @@ def create_app(config_class=Config):
             best_pg = (
                 PlayerGame.query
                 .join(PlayerGame.game)
+                .filter(Game.played_at >= year_start)
                 .order_by(desc(col))
                 .first()
             )
@@ -413,7 +414,7 @@ def create_app(config_class=Config):
             }
 
         # Property-based categories require loading all records
-        all_pgs = PlayerGame.query.join(PlayerGame.game).all()
+        all_pgs = PlayerGame.query.join(PlayerGame.game).filter(Game.played_at >= year_start).all()
         if all_pgs:
             for key, attr, label in property_categories:
                 best_pg = max(all_pgs, key=lambda pg, a=attr: getattr(pg, a) or 0)
@@ -498,6 +499,7 @@ def create_app(config_class=Config):
         data = request.get_json(force=True) or {}
         scope = data.get("scope", "all_time")   # "all_time" | "session"
         scope_id = data.get("scope_id")         # session id if scope=="session"
+        player_ids = data.get("player_ids") or []  # optional list of steam_ids
 
         if scope == "session" and scope_id:
             session = Session.query.get(scope_id)
@@ -506,17 +508,29 @@ def create_app(config_class=Config):
             player_stats_list = _aggregate_session_stats(session)
             scope_label = f"session '{session.name}'"
         else:
-            players = Player.query.all()
+            if player_ids:
+                players = Player.query.filter(Player.steam_id.in_(player_ids[:5])).all()
+            else:
+                players = Player.query.all()
             player_stats_list = [_aggregate_player_stats(p) for p in players]
             scope_label = "all time"
 
         if not player_stats_list:
             return jsonify({"error": "No stats available. Sync data first."}), 400
 
+        # Attach per-game breakdown for richer analysis (only available for non-session scope)
+        from models import PlayerGame
+        per_game_data = {}
+        if scope != "session" or not scope_id:
+            for p in players:
+                pgs = PlayerGame.query.filter_by(player_id=p.id).order_by(PlayerGame.game_id.desc()).limit(30).all()
+                per_game_data[p.steam_id] = [pg.to_dict() for pg in pgs]
+
         analysis_text = openai_client.generate_analysis(
             player_stats_list,
             scope=scope_label,
             openai_api_key=app.config["OPENAI_API_KEY"],
+            per_game_data=per_game_data,
         )
 
         record = AIAnalysis(
@@ -536,7 +550,11 @@ def create_app(config_class=Config):
     # ------------------------------------------------------------------ #
 
     def _aggregate_player_stats(player) -> dict:
-        """Return a dict of aggregate stats for a player across all their games."""
+        """Return a dict of aggregate stats for a player across all their games.
+
+        Games with zero ADR or zero rating are excluded from the respective
+        averages to avoid old/incomplete game records skewing the numbers.
+        """
         from models import PlayerGame
         pgs = PlayerGame.query.filter_by(player_id=player.id).all()
         if not pgs:
@@ -561,15 +579,19 @@ def create_app(config_class=Config):
         total_deaths = sum(pg.deaths for pg in pgs)
         total_assists = sum(pg.assists for pg in pgs)
 
+        # Only average over games that have valid (non-zero) data
+        rated = [pg for pg in pgs if pg.leetify_rating != 0]
+        adr_games = [pg for pg in pgs if pg.adr > 0]
+
         return {
             "steam_id": player.steam_id,
             "username": player.username,
             "avatar_url": player.avatar_url,
             "games": n,
-            "avg_rating": round(sum(pg.rating for pg in pgs) / n, 3),
-            "avg_leetify_rating": round(sum(pg.leetify_rating for pg in pgs) / n, 3),
+            "avg_rating": round(sum(pg.leetify_rating for pg in rated) / len(rated), 3) if rated else 0.0,
+            "avg_leetify_rating": round(sum(pg.leetify_rating for pg in rated) / len(rated), 3) if rated else 0.0,
             "avg_kd": round(total_kills / max(total_deaths, 1), 2),
-            "avg_adr": round(sum(pg.adr for pg in pgs) / n, 1),
+            "avg_adr": round(sum(pg.adr for pg in adr_games) / len(adr_games), 1) if adr_games else 0.0,
             "avg_hs_pct": round(
                 sum(pg.headshot_pct for pg in pgs) / n, 1
             ),
@@ -605,16 +627,18 @@ def create_app(config_class=Config):
             n = len(pgs)
             total_kills = sum(pg.kills for pg in pgs)
             total_deaths = sum(pg.deaths for pg in pgs)
+            rated = [pg for pg in pgs if pg.leetify_rating != 0]
+            adr_games = [pg for pg in pgs if pg.adr > 0]
 
             result.append({
                 "steam_id": player.steam_id,
                 "username": player.username,
                 "avatar_url": player.avatar_url,
                 "games": n,
-                "avg_rating": round(sum(pg.rating for pg in pgs) / n, 3),
-                "avg_leetify_rating": round(sum(pg.leetify_rating for pg in pgs) / n, 3),
+                "avg_rating": round(sum(pg.leetify_rating for pg in rated) / len(rated), 3) if rated else 0.0,
+                "avg_leetify_rating": round(sum(pg.leetify_rating for pg in rated) / len(rated), 3) if rated else 0.0,
                 "avg_kd": round(total_kills / max(total_deaths, 1), 2),
-                "avg_adr": round(sum(pg.adr for pg in pgs) / n, 1),
+                "avg_adr": round(sum(pg.adr for pg in adr_games) / len(adr_games), 1) if adr_games else 0.0,
                 "avg_hs_pct": round(sum(pg.headshot_pct for pg in pgs) / n, 1),
                 "win_rate": 0.0,
                 "total_kills": total_kills,

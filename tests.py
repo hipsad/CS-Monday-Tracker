@@ -634,7 +634,9 @@ def test_sync_with_new_api_format_captures_friend_stats(client, monkeypatch, app
 
 
 def test_stat_records_endpoint(client, monkeypatch, app):
-    """The /api/stats/records endpoint should return best single-game performances."""
+    """The /api/stats/records endpoint should return best single-game performances from this year."""
+    from datetime import date
+    this_year = date.today().year
     fake_profile = {
         "steam64_id": "76561198000000001",
         "name": "RecordPlayer",
@@ -642,7 +644,7 @@ def test_stat_records_endpoint(client, monkeypatch, app):
             {
                 "id": "record-match-1",
                 "map_name": "de_dust2",
-                "finished_at": "2025-07-01T20:00:00Z",
+                "finished_at": f"{this_year}-02-01T20:00:00Z",
                 "score": [16, 10],
             }
         ],
@@ -748,8 +750,8 @@ def test_monthly_stats_with_recent_game(client, monkeypatch, app):
     assert players[0]["total_kills"] == 20
 
 
-def test_monthly_stats_excludes_old_games(client, monkeypatch, app):
-    """Games older than 30 days should NOT appear in monthly stats."""
+def test_monthly_stats_includes_older_games(client, monkeypatch, app):
+    """Monthly stats now returns the last 30 games regardless of when they were played."""
     from datetime import datetime, timedelta, timezone
 
     fake_profile = {
@@ -798,10 +800,10 @@ def test_monthly_stats_excludes_old_games(client, monkeypatch, app):
     res = client.get("/api/stats/monthly")
     assert res.status_code == 200
     players = res.get_json()
-    # Player exists but has 0 games in the last 30 days
+    # Last-30-games includes this game even though it was 60 days ago
     assert len(players) == 1
-    assert players[0]["games"] == 0
-    assert players[0]["total_kills"] == 0
+    assert players[0]["games"] == 1
+    assert players[0]["total_kills"] == 15
 
 
 # ------------------------------------------------------------------ #

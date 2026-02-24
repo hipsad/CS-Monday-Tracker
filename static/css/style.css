@@ -266,3 +266,19 @@ main { max-width: 1100px; margin: 0 auto; padding: 24px 20px; }
 .toast.show { opacity: 1; }
 .toast.error { border-color: var(--red); color: var(--red); }
 .toast.success { border-color: var(--green); }
+
+/* ===== Player Stats filter labels ===== */
+.ps-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  user-select: none;
+}
+.ps-filter-label:hover { color: var(--text); border-color: var(--accent2); }
+.ps-filter-label input { cursor: pointer; }
